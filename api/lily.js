@@ -11,6 +11,11 @@ export default async function handler(req, res) {
 
   try {
     const result = await runLilyTask(req.body?.task);
+
+    if (result?.action === "EMAIL_SENT") {
+      return sendJson(res, 200, result);
+    }
+
     return sendJson(res, 200, {
       ok: true,
       result

@@ -18,6 +18,11 @@ app.get("/", (req, res) => {
 app.post("/lily", async (req, res) => {
   try {
     const result = await runLilyTask(req.body?.task);
+
+    if (result?.action === "EMAIL_SENT") {
+      return sendJson(res, 200, result);
+    }
+
     sendJson(res, 200, {
       ok: true,
       result
