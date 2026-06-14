@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
+    "wechat": "node wechaty-bot.js",
     "lint": "node --check server.js && node --check api/lily.js && node --check lib/lily.js"
   },
   "engines": {
@@ -15,6 +16,8 @@
   "dependencies": {
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "openai": "^4.77.0"
+    "openai": "^4.77.0",
+    "qrcode-terminal": "^0.12.0",
+    "wechaty": "^1.20.2"
   }
 }
