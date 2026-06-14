@@ -24,15 +24,19 @@ The API returns:
 - OpenAI API
 - Vercel Serverless Function for deployment
 - Wechaty worker for WeChat control
+- Resend email sending
 
 ## Files
 
 - `server.js` - local Express server with `POST /lily`
 - `api/lily.js` - Vercel serverless endpoint
+- `api/email.js` - Resend email sending endpoint
 - `lib/lily.js` - shared Lily/OpenAI logic
+- `lib/email.js` - shared Resend email logic
 - `public/index.html` - mobile web control panel
 - `wechaty-bot.js` - WeChat listener that forwards messages to Lily
 - `docs/WECHAT.md` - complete WeChat deployment guide
+- `docs/EMAIL.md` - email setup and test guide
 - `.env.example` - environment variable template
 - `vercel.json` - maps `/lily` to the Vercel API function
 
@@ -122,6 +126,28 @@ docs/WECHAT.md
 ```
 
 The worker listens to WeChat messages, sends the text to `/api/lily`, and replies with Lily's result. Run it on Railway, Render, Fly.io, or a VPS. Do not run the Wechaty worker on Vercel because Vercel functions are not long-running processes.
+
+## Email Sending
+
+Lily can send email through Resend:
+
+```text
+POST /api/email
+```
+
+Required Vercel environment variables:
+
+```bash
+RESEND_API_KEY=re_your-resend-api-key
+RESEND_FROM=Lily Agent <onboarding@resend.dev>
+EMAIL_SEND_SECRET=choose-a-long-random-secret
+```
+
+Read:
+
+```text
+docs/EMAIL.md
+```
 
 ## Example Response
 
