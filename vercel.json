@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "src": "/lily",
+      "dest": "/api/lily.js"
+    },
+    {
+      "src": "/api/lily",
+      "dest": "/api/lily.js"
+    }
+  ]
+}
