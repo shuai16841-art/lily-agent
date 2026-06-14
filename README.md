@@ -23,12 +23,16 @@ The API returns:
 - Express for local development
 - OpenAI API
 - Vercel Serverless Function for deployment
+- Wechaty worker for WeChat control
 
 ## Files
 
 - `server.js` - local Express server with `POST /lily`
 - `api/lily.js` - Vercel serverless endpoint
 - `lib/lily.js` - shared Lily/OpenAI logic
+- `public/index.html` - mobile web control panel
+- `wechaty-bot.js` - WeChat listener that forwards messages to Lily
+- `docs/WECHAT.md` - complete WeChat deployment guide
 - `.env.example` - environment variable template
 - `vercel.json` - maps `/lily` to the Vercel API function
 
@@ -70,90 +74,54 @@ curl -X POST http://localhost:3000/lily \
 
 ## Deploy to Vercel
 
-### Option A: Deploy from GitHub
-
-1. Create a GitHub repository named `lily-agent`.
-2. Push this project to the repository.
-3. Open [Vercel](https://vercel.com/new).
-4. Import the `lily-agent` GitHub repository.
-5. Add this environment variable in Vercel:
+1. Open [Vercel](https://vercel.com/new).
+2. Import the `lily-agent` GitHub repository.
+3. Add environment variables:
 
 ```bash
 OPENAI_API_KEY=sk-your-real-key
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-6. Deploy.
+4. Deploy.
 
-After deployment, your production endpoint will be:
-
-```text
-https://your-vercel-project.vercel.app/lily
-```
-
-The `vercel.json` file also supports:
+Production web panel:
 
 ```text
-https://your-vercel-project.vercel.app/api/lily
+https://lily-agent-rouge.vercel.app
 ```
 
-### Option B: Deploy with Vercel CLI
+Production API endpoint:
+
+```text
+https://lily-agent-rouge.vercel.app/api/lily
+```
+
+## Phone Web Control
+
+Open this URL on your phone:
+
+```text
+https://lily-agent-rouge.vercel.app
+```
+
+Type a task and tap `Submit`.
+
+## WeChat Control
+
+Wechaty support has been added as a separate long-running worker:
 
 ```bash
-npm install -g vercel
-vercel
-vercel env add OPENAI_API_KEY
-vercel --prod
+npm run wechat
 ```
 
-## Phone Test
-
-### iPhone Shortcuts
-
-1. Open the Shortcuts app.
-2. Create a new shortcut named `Ask Lily`.
-3. Add `Text` and write your task.
-4. Add `Get Contents of URL`.
-5. Set URL to:
+Read the full deployment guide:
 
 ```text
-https://your-vercel-project.vercel.app/lily
+docs/WECHAT.md
 ```
 
-6. Method: `POST`.
-7. Headers:
-
-```text
-Content-Type: application/json
-```
-
-8. Request Body: JSON:
-
-```json
-{
-  "task": "Find 10 California auto dealers who may import jump starters from China"
-}
-```
-
-9. Add `Show Result`.
-
-### Android
-
-Use an app such as HTTP Request Shortcuts, MacroDroid, Tasker, or a browser-based API tester.
-
-POST to:
-
-```text
-https://your-vercel-project.vercel.app/lily
-```
-
-Body:
-
-```json
-{
-  "task": "Find 10 California auto dealers who may import jump starters from China"
-}
-```
+The worker listens to WeChat messages, sends the text to `/api/lily`, and replies with Lily's result. Run it on Railway, Render, Fly.io, or a VPS. Do not run the Wechaty worker on Vercel because Vercel functions are not long-running processes.
 
 ## Example Response
 
@@ -177,27 +145,3 @@ Body:
   }
 }
 ```
-
-## Next: Telegram or WeChat
-
-### Telegram
-
-The easiest next step is Telegram:
-
-1. Create a bot with `@BotFather`.
-2. Store `TELEGRAM_BOT_TOKEN` in Vercel.
-3. Add a webhook endpoint, for example `POST /api/telegram`.
-4. When a Telegram message arrives, forward the message text to `runLilyTask()`.
-5. Send Lily's JSON summary back to the Telegram chat.
-
-### WeChat
-
-WeChat is possible, but usually takes more setup:
-
-1. Register a WeChat Official Account or use WeCom.
-2. Configure server verification with WeChat's token/signature flow.
-3. Add a webhook endpoint, for example `POST /api/wechat`.
-4. Parse inbound messages and pass the text to `runLilyTask()`.
-5. Return a WeChat-compatible XML or JSON response depending on the selected WeChat platform.
-
-For version 2, Telegram is faster. WeChat is better once the workflow is stable and you want daily use inside China's messaging ecosystem.
