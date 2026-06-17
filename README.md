@@ -31,6 +31,7 @@ The API returns:
 - `server.js` - local Express server with `POST /lily`
 - `api/lily.js` - Vercel serverless endpoint
 - `api/email.js` - Resend email sending endpoint
+- `api/wecom.js` - WeCom callback verification and message receiving endpoint
 - `lib/lily.js` - shared Lily/OpenAI logic
 - `lib/email.js` - shared Resend email logic
 - `public/index.html` - mobile web control panel
@@ -100,6 +101,29 @@ Production API endpoint:
 ```text
 https://lily-agent-rouge.vercel.app/api/lily
 ```
+
+## WeCom Custom App
+
+In the WeCom Admin Console, configure LILY's callback URL as:
+
+```text
+https://lily-agent-rouge.vercel.app/api/wecom
+```
+
+Add these environment variables to the Vercel project:
+
+```bash
+WECOM_TOKEN=your-callback-token
+WECOM_ENCODING_AES_KEY=your-43-character-encoding-aes-key
+WECOM_CORP_ID=your-corporation-id
+WECOM_AGENT_ID=your-lily-agent-id
+WECOM_SECRET=your-lily-app-secret
+```
+
+In the WeCom Admin Console callback settings, fill in the same `Token` and
+`EncodingAESKey` values, then save the callback configuration. The GET endpoint
+verifies WeCom's signature and returns the decrypted `echostr`. POST message
+receiving is currently a placeholder for future user-message handling.
 
 ## Phone Web Control
 
