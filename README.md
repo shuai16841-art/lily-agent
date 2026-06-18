@@ -32,6 +32,7 @@ The API returns:
 - `api/lily.js` - Vercel serverless endpoint
 - `api/email.js` - Resend email sending endpoint
 - `api/wecom.js` - WeCom callback verification and message receiving endpoint
+- `api/telegram.js` - Telegram bot webhook endpoint
 - `lib/lily.js` - shared Lily/OpenAI logic
 - `lib/email.js` - shared Resend email logic
 - `public/index.html` - mobile web control panel
@@ -124,6 +125,37 @@ In the WeCom Admin Console callback settings, fill in the same `Token` and
 `EncodingAESKey` values, then save the callback configuration. The GET endpoint
 verifies WeCom's signature and returns the decrypted `echostr`. POST message
 receiving is currently a placeholder for future user-message handling.
+
+## Telegram Bot
+
+Lily can receive tasks from [@john_lily_agent_bot](https://t.me/john_lily_agent_bot)
+through this webhook:
+
+```text
+https://lily-agent-rouge.vercel.app/api/telegram
+```
+
+Add the bot token from BotFather to the Vercel project:
+
+```bash
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+```
+
+After deploying, register the webhook:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://lily-agent-rouge.vercel.app/api/telegram"
+```
+
+Confirm Telegram accepted it:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
+```
+
+Open the bot in Telegram, send a text command, and Lily will run it through the
+same task logic used by `POST /api/lily`. Long results are split across multiple
+Telegram messages automatically.
 
 ## Phone Web Control
 

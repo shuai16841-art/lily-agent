@@ -16,6 +16,10 @@
     {
       "src": "/api/wecom",
       "dest": "/api/wecom.js"
+    },
+    {
+      "src": "/api/telegram",
+      "dest": "/api/telegram.js"
     }
   ]
 }
