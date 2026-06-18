@@ -162,6 +162,13 @@ recipient address and message content; questions about email are answered
 without sending. Telegram `update_id` values are cached to suppress duplicate
 webhook processing.
 
+Before responding, Lily classifies each Telegram message as `QUESTION`,
+`COMMAND`, `TOOL_ACTION`, `CLARIFICATION`, or `CASUAL`. Intent classification
+is separate from tool authorization: mentioning a tool never executes it by
+itself. A tool runs only when the message is an explicit, complete
+`TOOL_ACTION`; otherwise Lily answers conversationally or asks one focused
+follow-up question.
+
 ## Phone Web Control
 
 Open this URL on your phone:

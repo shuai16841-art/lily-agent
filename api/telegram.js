@@ -1,4 +1,4 @@
-import { runLilyTask, sendJson } from "../lib/lily.js";
+import { classifyTaskIntent, runLilyTask, sendJson } from "../lib/lily.js";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const MAX_PROCESSED_UPDATES = 500;
@@ -50,7 +50,7 @@ function formatLead(lead, index, includeEmail = true) {
 
 export function formatLilyResult(result) {
   if (
-    result?.action === "EMAIL_CONVERSATION" ||
+    result?.action === "CONVERSATIONAL_RESPONSE" ||
     result?.action === "EMAIL_CLARIFICATION"
   ) {
     return cleanText(result.message) || "Please provide the missing email details.";
@@ -73,6 +73,7 @@ export function formatLilyResult(result) {
   }
 
   const summary = cleanText(result.summary);
+  const response = cleanText(result.response);
   const task = cleanText(result.task);
   const rawResult = cleanText(result.raw_result);
   const notes = formatNotes(result.notes);
@@ -82,11 +83,15 @@ export function formatLilyResult(result) {
     .filter(Boolean);
   const sections = [];
 
-  if (summary) {
+  if (response) {
+    sections.push(response);
+  }
+
+  if (!response && summary) {
     sections.push(`Task completed: ${summary}`);
-  } else if (task) {
+  } else if (!response && task) {
     sections.push(`Task completed: ${task}`);
-  } else {
+  } else if (!response) {
     sections.push("Task completed.");
   }
 
@@ -200,7 +205,8 @@ async function processTelegramUpdateOnce(
   }
 
   try {
-    const result = await runTask(text.trim());
+    const classification = classifyTaskIntent(text.trim());
+    const result = await runTask(text.trim(), undefined, { classification });
     const chunks = splitTelegramMessage(formatLilyResult(result));
 
     for (const chunk of chunks) {
@@ -210,6 +216,7 @@ async function processTelegramUpdateOnce(
     return {
       ok: true,
       chatId,
+      intent: classification.intent,
       messagesSent: chunks.length
     };
   } catch (error) {
