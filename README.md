@@ -162,6 +162,10 @@ recipient address and message content; questions about email are answered
 without sending. Telegram `update_id` values are cached to suppress duplicate
 webhook processing.
 
+If an explicit send command omits the subject, Lily uses `Message from Lily`.
+Short message content is sent exactly as provided. If sending fails, Telegram
+shows the underlying error once and the same `update_id` is not processed again.
+
 Before responding, Lily classifies each Telegram message as `QUESTION`,
 `COMMAND`, `TOOL_ACTION`, `CLARIFICATION`, or `CASUAL`. Intent classification
 is separate from tool authorization: mentioning a tool never executes it by

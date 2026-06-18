@@ -226,9 +226,16 @@ async function processTelegramUpdateOnce(
       await sendTelegramMessage(token, chatId, errorText.slice(0, TELEGRAM_MESSAGE_LIMIT), fetchImpl);
     } catch (sendError) {
       error.message = `${error.message || "Lily task failed"}; ${sendError.message}`;
+      throw error;
     }
 
-    throw error;
+    return {
+      ok: false,
+      handled: true,
+      chatId,
+      error: error.message || "Unexpected error",
+      messagesSent: 1
+    };
   }
 }
 

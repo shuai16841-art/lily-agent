@@ -50,9 +50,8 @@ test("incomplete email command asks one clarifying question", async () => {
 
   assert.equal(result.action, "EMAIL_CLARIFICATION");
   assert.equal(result.intent, "TOOL_ACTION");
-  assert.deepEqual(result.missing, ["recipient", "subject", "body"]);
+  assert.deepEqual(result.missing, ["recipient", "body"]);
   assert.match(result.message, /\u6536\u4ef6\u4eba\u90ae\u7bb1/);
-  assert.match(result.message, /\u4e3b\u9898/);
   assert.match(result.message, /\u6b63\u6587/);
   assert.equal((result.message.match(/\uff1f|\?/g) || []).length <= 1, true);
   assert.equal(sendCount, 0);
@@ -76,10 +75,40 @@ test("complete explicit email command executes EMAIL_SEND", async () => {
   assert.deepEqual(sent, [
     {
       to: "abc@example.com",
-      subject: "hello",
+      subject: "Message from Lily",
       text: "hello"
     }
   ]);
+});
+
+test("Chinese email command with recipient and short body executes exactly once", async () => {
+  const sent = [];
+  const result = await runLilyTask(
+    "\u7528\u6211\u7684\u90ae\u7bb1\u7ed9 923785572@qq.com \u53d1\u4e2a\u90ae\u4ef6\uff0c\u8bf4\u6211\u5f88\u597d\u73b0\u5728",
+    null,
+    {
+      sendEmailImpl: async (request) => {
+        sent.push(request.body);
+        return { id: "email-qq-123" };
+      }
+    }
+  );
+
+  assert.equal(result.intent, "TOOL_ACTION");
+  assert.equal(result.action, "EMAIL_SENT");
+  assert.equal(result.to, "923785572@qq.com");
+  assert.equal(result.subject, "Message from Lily");
+  assert.deepEqual(sent, [
+    {
+      to: "923785572@qq.com",
+      subject: "Message from Lily",
+      text: "\u6211\u5f88\u597d\u73b0\u5728"
+    }
+  ]);
+  assert.equal(
+    formatLilyResult(result),
+    "Task completed: Email sent\nTo: 923785572@qq.com\nSubject: Message from Lily"
+  );
 });
 
 test("non-send email wording is a command without tool execution", () => {
@@ -224,4 +253,45 @@ test("duplicate Telegram update_id is processed only once", async () => {
   assert.equal(duplicate.duplicate, true);
   assert.equal(taskCount, 1);
   assert.equal(sent.length, 1);
+});
+
+test("Telegram reports a send failure once and caches the failed update", async () => {
+  const updateCache = new Map();
+  const replies = [];
+  let taskCount = 0;
+  const update = {
+    update_id: 1234567,
+    message: {
+      chat: { id: 99 },
+      text: "Send an email to abc@example.com saying hello"
+    }
+  };
+  const options = {
+    token: "test-token",
+    updateCache,
+    runTask: async () => {
+      taskCount += 1;
+      throw new Error("Resend rejected the sender domain");
+    },
+    fetchImpl: async (url, request) => {
+      replies.push(JSON.parse(request.body).text);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true })
+      };
+    }
+  };
+
+  const first = await processTelegramUpdate(update, options);
+  const duplicate = await processTelegramUpdate(update, options);
+
+  assert.equal(first.ok, false);
+  assert.equal(first.handled, true);
+  assert.equal(first.error, "Resend rejected the sender domain");
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(taskCount, 1);
+  assert.deepEqual(replies, [
+    "Lily could not complete that request: Resend rejected the sender domain"
+  ]);
 });
