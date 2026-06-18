@@ -154,8 +154,10 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
 ```
 
 Open the bot in Telegram, send a text command, and Lily will run it through the
-same task logic used by `POST /api/lily`. Long results are split across multiple
-Telegram messages automatically.
+same task logic used by `POST /api/lily`. Telegram replies are formatted as
+mobile-friendly summaries, numbered lead lists, and copy-ready outreach emails
+instead of raw JSON. Long results are split across multiple messages
+automatically.
 
 ## Phone Web Control
 

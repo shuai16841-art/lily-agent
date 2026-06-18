@@ -2,16 +2,119 @@ import { runLilyTask, sendJson } from "../lib/lily.js";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 
-function formatLilyResult(result) {
+function cleanText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isJsonLikeText(value) {
+  const text = cleanText(value).replace(/^```(?:json)?\s*/i, "");
+  return text.startsWith("{") || text.startsWith("[");
+}
+
+function formatNotes(notes) {
+  if (!Array.isArray(notes) || notes.length === 0) {
+    return "";
+  }
+
+  const items = notes
+    .map(cleanText)
+    .filter(Boolean)
+    .map((note) => `- ${note}`);
+
+  return items.length > 0 ? `Notes / next steps:\n${items.join("\n")}` : "";
+}
+
+function formatLead(lead, index, includeEmail = true) {
+  const name = cleanText(lead?.company_name) || `Lead ${index + 1}`;
+  const lines = [`${index + 1}. ${name}`];
+  const website = cleanText(lead?.website);
+  const reason = cleanText(lead?.reason_good_lead);
+  const email = cleanText(lead?.suggested_outreach_email);
+
+  if (website) {
+    lines.push(website);
+  }
+  if (reason) {
+    lines.push(`Why it fits: ${reason}`);
+  }
+  if (includeEmail && email) {
+    lines.push("", "Outreach email:", email);
+  }
+
+  return lines.join("\n");
+}
+
+export function formatLilyResult(result) {
   if (result?.action === "EMAIL_SENT") {
-    return `Email sent to ${result.to}${result.subject ? `\nSubject: ${result.subject}` : ""}`;
+    const lines = ["Task completed: Email sent", `To: ${result.to}`];
+    if (result.subject) {
+      lines.push(`Subject: ${result.subject}`);
+    }
+    return lines.join("\n");
   }
 
   if (typeof result === "string") {
-    return result;
+    return result.trim();
   }
 
-  return JSON.stringify(result, null, 2);
+  if (!result || typeof result !== "object") {
+    return "Task completed.";
+  }
+
+  const summary = cleanText(result.summary);
+  const task = cleanText(result.task);
+  const rawResult = cleanText(result.raw_result);
+  const notes = formatNotes(result.notes);
+  const leads = Array.isArray(result.leads) ? result.leads.filter(Boolean) : [];
+  const emails = leads
+    .map((lead) => cleanText(lead?.suggested_outreach_email))
+    .filter(Boolean);
+  const sections = [];
+
+  if (summary) {
+    sections.push(`Task completed: ${summary}`);
+  } else if (task) {
+    sections.push(`Task completed: ${task}`);
+  } else {
+    sections.push("Task completed.");
+  }
+
+  if (leads.length === 1 && emails.length === 1) {
+    const lead = leads[0];
+    const name = cleanText(lead.company_name);
+    const website = cleanText(lead.website);
+    const reason = cleanText(lead.reason_good_lead);
+    const context = [];
+
+    if (name) {
+      context.push(`For: ${name}`);
+    }
+    if (website) {
+      context.push(website);
+    }
+    if (reason) {
+      context.push(`Why it fits: ${reason}`);
+    }
+    if (context.length > 0) {
+      sections.push(context.join("\n"));
+    }
+
+    sections.push(`Final outreach email:\n\n${emails[0]}`);
+  } else if (leads.length > 0) {
+    sections.push(
+      `Leads (${leads.length}):\n\n${leads
+        .map((lead, index) => formatLead(lead, index))
+        .join("\n\n")}`
+    );
+  } else if (rawResult && !isJsonLikeText(rawResult)) {
+    sections.push(rawResult);
+  }
+
+  if (notes) {
+    sections.push(notes);
+  }
+
+  return sections.filter(Boolean).join("\n\n");
 }
 
 function splitTelegramMessage(text, limit = TELEGRAM_MESSAGE_LIMIT) {
