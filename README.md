@@ -157,7 +157,10 @@ Open the bot in Telegram, send a text command, and Lily will run it through the
 same task logic used by `POST /api/lily`. Telegram replies are formatted as
 mobile-friendly summaries, numbered lead lists, and copy-ready outreach emails
 instead of raw JSON. Long results are split across multiple messages
-automatically.
+automatically. Email tools run only for explicit send instructions with a
+recipient address and message content; questions about email are answered
+without sending. Telegram `update_id` values are cached to suppress duplicate
+webhook processing.
 
 ## Phone Web Control
 

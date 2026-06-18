@@ -1,6 +1,10 @@
 import { runLilyTask, sendJson } from "../lib/lily.js";
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
+const MAX_PROCESSED_UPDATES = 500;
+const processedTelegramUpdates =
+  globalThis.__lilyProcessedTelegramUpdates || new Map();
+globalThis.__lilyProcessedTelegramUpdates = processedTelegramUpdates;
 
 function cleanText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -45,6 +49,13 @@ function formatLead(lead, index, includeEmail = true) {
 }
 
 export function formatLilyResult(result) {
+  if (
+    result?.action === "EMAIL_CONVERSATION" ||
+    result?.action === "EMAIL_CLARIFICATION"
+  ) {
+    return cleanText(result.message) || "Please provide the missing email details.";
+  }
+
   if (result?.action === "EMAIL_SENT") {
     const lines = ["Task completed: Email sent", `To: ${result.to}`];
     if (result.subject) {
@@ -162,7 +173,7 @@ async function sendTelegramMessage(token, chatId, text, fetchImpl = fetch) {
   return responseBody;
 }
 
-export async function processTelegramUpdate(
+async function processTelegramUpdateOnce(
   update,
   {
     token = process.env.TELEGRAM_BOT_TOKEN,
@@ -210,6 +221,48 @@ export async function processTelegramUpdate(
       error.message = `${error.message || "Lily task failed"}; ${sendError.message}`;
     }
 
+    throw error;
+  }
+}
+
+function rememberTelegramUpdate(updateId, job, updateCache) {
+  updateCache.set(updateId, job);
+
+  while (updateCache.size > MAX_PROCESSED_UPDATES) {
+    const oldestUpdateId = updateCache.keys().next().value;
+    updateCache.delete(oldestUpdateId);
+  }
+}
+
+export async function processTelegramUpdate(
+  update,
+  options = {}
+) {
+  const updateId = update?.update_id;
+  const updateCache = options.updateCache || processedTelegramUpdates;
+
+  if (updateId === undefined || updateId === null) {
+    return processTelegramUpdateOnce(update, options);
+  }
+
+  const existingJob = updateCache.get(updateId);
+  if (existingJob) {
+    await existingJob;
+    return {
+      ok: true,
+      ignored: true,
+      duplicate: true,
+      updateId
+    };
+  }
+
+  const job = processTelegramUpdateOnce(update, options);
+  rememberTelegramUpdate(updateId, job, updateCache);
+
+  try {
+    return await job;
+  } catch (error) {
+    updateCache.delete(updateId);
     throw error;
   }
 }
