@@ -173,6 +173,13 @@ Authorization: Bearer <LILY_WORKER_SECRET>
 
 Each call processes one queued task. A long-running worker is more reliable.
 
+The included Vercel Cron calls `/api/worker` once per minute. Vercel Cron does
+not support a 45-second schedule; on Pro/Enterprise its minimum interval is one
+minute. The worker invocation itself keeps a 45-second heartbeat while a task
+is running, and each later cron invocation also checks Turso for running tasks
+whose heartbeat is due. Configure `CRON_SECRET`; Vercel sends it automatically
+as `Authorization: Bearer <CRON_SECRET>`.
+
 Production web panel:
 
 ```text

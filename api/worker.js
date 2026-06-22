@@ -1,9 +1,15 @@
-import { processNextTask } from "../lib/queue.js";
+import { runScheduledWorkerCycle } from "../lib/queue.js";
 import { sendJson } from "../lib/lily.js";
 
 export const config = {
   maxDuration: 300
 };
+
+export function isAuthorizedWorkerRequest(req, env = process.env) {
+  const actual = req.headers.authorization?.replace(/^Bearer\s+/i, "");
+  const acceptedSecrets = [env.CRON_SECRET, env.LILY_WORKER_SECRET].filter(Boolean);
+  return acceptedSecrets.length > 0 && acceptedSecrets.includes(actual);
+}
 
 export default async function handler(req, res) {
   if (req.method !== "POST" && req.method !== "GET") {
@@ -14,9 +20,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const expected = process.env.LILY_WORKER_SECRET || process.env.CRON_SECRET;
-  const actual = req.headers.authorization?.replace(/^Bearer\s+/i, "");
-  if (!expected || actual !== expected) {
+  if (!isAuthorizedWorkerRequest(req)) {
     return sendJson(res, 401, {
       ok: false,
       error: "Unauthorized worker request."
@@ -24,13 +28,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const task = await processNextTask();
+    const cycle = await runScheduledWorkerCycle();
     return sendJson(res, 200, {
       ok: true,
-      processed: Boolean(task),
-      task
+      ...cycle
     });
   } catch (error) {
+    console.error("[Scheduled worker] Failed:", error);
     return sendJson(res, 500, {
       ok: false,
       error: error.message || "Worker failed"

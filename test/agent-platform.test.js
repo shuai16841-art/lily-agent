@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { createClient } from "@libsql/client";
 
 import { LilyDatabase, resolveDatabaseConfig } from "../lib/db.js";
-import { processNextTask } from "../lib/queue.js";
+import {
+  heartbeatRunningTasks,
+  processNextTask,
+  runScheduledWorkerCycle
+} from "../lib/queue.js";
 import {
   estimateTaskDurationSeconds,
   formatProgressStatus,
@@ -11,6 +16,7 @@ import {
   shouldRunInBackground
 } from "../lib/task-service.js";
 import { processTelegramUpdate } from "../api/telegram.js";
+import { isAuthorizedWorkerRequest } from "../api/worker.js";
 
 async function memoryDb() {
   const db = new LilyDatabase(createClient({ url: ":memory:" }));
@@ -412,6 +418,102 @@ test("worker sends start ETA and milestone progress updates", async () => {
       "Completed"
     ]
   );
+});
+
+test("scheduled heartbeat checks Turso-style running tasks and sends Telegram status", async () => {
+  const db = await memoryDb();
+  const task = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Find buyers",
+    metadata: {
+      estimated_duration_seconds: 300,
+      started_at: "2026-01-01T00:00:00.000Z",
+      current_stage: "Researching...",
+      current_activity: "Searching buyer directories",
+      last_status_sent_at: "2026-01-01T00:00:00.000Z",
+      stage_history: []
+    }
+  });
+  await db.client.execute({
+    sql: "UPDATE tasks SET status = 'running', progress = 20 WHERE id = ?",
+    args: [task.id]
+  });
+  const notifications = [];
+  const heartbeatTaskIds = await heartbeatRunningTasks({
+    db,
+    currentTime: Date.parse("2026-01-01T00:01:00.000Z"),
+    heartbeatAfterSeconds: 45,
+    notify: async (chatId, text) => notifications.push({ chatId, text })
+  });
+
+  assert.deepEqual(heartbeatTaskIds, [task.id]);
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0].text, /\[Task ID:/);
+  assert.match(notifications[0].text, /Status: Researching\.\.\./);
+  const updated = await db.getTask(task.id);
+  assert.equal(
+    updated.metadata.last_cron_heartbeat_at,
+    "2026-01-01T00:01:00.000Z"
+  );
+});
+
+test("scheduled worker cycle claims queued work and completes it", async () => {
+  const db = await memoryDb();
+  const task = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Find buyers"
+  });
+
+  const cycle = await runScheduledWorkerCycle({
+    db,
+    notify: async () => {},
+    runner: async () => ({
+      summary: "Completed by scheduled worker.",
+      buyers: [],
+      factories: [],
+      notes: []
+    })
+  });
+
+  assert.equal(cycle.processedTaskId, task.id);
+  assert.equal((await db.getTask(task.id)).status, "completed");
+});
+
+test("worker endpoint accepts CRON_SECRET and legacy worker secret", () => {
+  assert.equal(
+    isAuthorizedWorkerRequest(
+      { headers: { authorization: "Bearer cron-value" } },
+      { CRON_SECRET: "cron-value", LILY_WORKER_SECRET: "worker-value" }
+    ),
+    true
+  );
+  assert.equal(
+    isAuthorizedWorkerRequest(
+      { headers: { authorization: "Bearer worker-value" } },
+      { CRON_SECRET: "cron-value", LILY_WORKER_SECRET: "worker-value" }
+    ),
+    true
+  );
+  assert.equal(
+    isAuthorizedWorkerRequest(
+      { headers: { authorization: "Bearer wrong" } },
+      { CRON_SECRET: "cron-value" }
+    ),
+    false
+  );
+});
+
+test("vercel production config schedules the worker every minute", () => {
+  const config = JSON.parse(fs.readFileSync("vercel.json", "utf8"));
+  assert.deepEqual(config.crons, [
+    {
+      path: "/api/worker",
+      schedule: "* * * * *"
+    }
+  ]);
+  assert.equal(config.functions["api/worker.js"].maxDuration, 300);
 });
 
 test("interrupted running tasks resume from the persisted checkpoint", async () => {
