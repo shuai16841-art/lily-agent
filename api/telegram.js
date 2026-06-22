@@ -5,6 +5,8 @@ import {
   approveEmailDraft,
   createBackgroundTask,
   createEmailApprovalDraft,
+  formatDuration,
+  formatTaskEta,
   shouldRunInBackground
 } from "../lib/task-service.js";
 
@@ -211,7 +213,16 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
       return "No tasks yet.";
     }
     return tasks
-      .map((task) => `${shortId(task.id)} · ${task.status} · ${task.progress}%\n${task.objective}`)
+      .map((task) => {
+        const eta = formatTaskEta(task);
+        return [
+          `${shortId(task.id)} · ${task.status} · ${task.progress}%`,
+          task.objective,
+          eta ? `ETA: ${eta}` : ""
+        ]
+          .filter(Boolean)
+          .join("\n");
+      })
       .join("\n\n");
   }
 
@@ -225,6 +236,10 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
     return [
       `Task ${shortId(task.id)}: ${task.status}`,
       `Progress: ${task.progress}%`,
+      task.metadata?.current_activity
+        ? `Current step: ${task.metadata.current_activity}`
+        : "",
+      formatTaskEta(task) ? `ETA: ${formatTaskEta(task)}` : "",
       task.objective,
       task.error ? `Error: ${task.error}` : ""
     ]
@@ -386,6 +401,7 @@ async function processTelegramUpdateOnce(
         [
           "Got it. I created a background task and will send the final report when it is finished.",
           `Task ID: ${task.id}`,
+          `Estimated time: ${formatDuration(task.metadata.estimated_duration_seconds)}`,
           "Use /status, /tasks, or /stop to manage it."
         ].join("\n"),
         fetchImpl

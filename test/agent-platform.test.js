@@ -4,7 +4,11 @@ import { createClient } from "@libsql/client";
 
 import { LilyDatabase } from "../lib/db.js";
 import { processNextTask } from "../lib/queue.js";
-import { shouldRunInBackground } from "../lib/task-service.js";
+import {
+  estimateTaskDurationSeconds,
+  formatTaskEta,
+  shouldRunInBackground
+} from "../lib/task-service.js";
 import { processTelegramUpdate } from "../api/telegram.js";
 
 async function memoryDb() {
@@ -57,6 +61,22 @@ test("research commands are recognized as background work", () => {
   assert.equal(shouldRunInBackground("How are you?"), false);
 });
 
+test("task estimates scale with requested research volume", () => {
+  const small = estimateTaskDurationSeconds("Find 5 buyers and 5 factories");
+  const large = estimateTaskDurationSeconds("Find 20 buyers and 10 factories");
+  assert.equal(small, 260);
+  assert.equal(large, 660);
+  assert.match(
+    formatTaskEta({
+      status: "queued",
+      metadata: {
+        estimated_duration_seconds: small
+      }
+    }),
+    /about 5 minutes/
+  );
+});
+
 test("Telegram creates a background task and acknowledges immediately", async () => {
   const db = await memoryDb();
   const sent = [];
@@ -86,7 +106,11 @@ test("Telegram creates a background task and acknowledges immediately", async ()
   assert.equal(result.ok, true);
   assert.ok(result.taskId);
   assert.match(sent[0], /background task/);
-  assert.equal((await db.getTask(result.taskId)).status, "queued");
+  assert.match(sent[0], /Estimated time: about 11 minutes/);
+  const storedTask = await db.getTask(result.taskId);
+  assert.equal(storedTask.status, "queued");
+  assert.equal(storedTask.metadata.estimated_duration_seconds, 660);
+  assert.equal(storedTask.metadata.current_activity, "Waiting for a worker");
 });
 
 test("Telegram /status and /stop manage the latest task", async () => {
@@ -122,8 +146,47 @@ test("Telegram /status and /stop manage the latest task", async () => {
   );
 
   assert.match(replies[0], /queued/);
+  assert.match(replies[0], /Progress: 0%/);
   assert.match(replies[1], /stopped/);
   assert.equal((await db.getTask(task.id)).status, "stopped");
+});
+
+test("worker sends start ETA and milestone progress updates", async () => {
+  const db = await memoryDb();
+  const task = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Find 5 buyers",
+    metadata: {
+      estimated_duration_seconds: 240,
+      current_activity: "Waiting for a worker"
+    }
+  });
+  const notifications = [];
+
+  await processNextTask({
+    db,
+    notify: async (chatId, text) => notifications.push(text),
+    runner: async (claimed, { onProgress }) => {
+      await onProgress({ progress: 30, message: "Searching buyer directories" });
+      await onProgress({ progress: 55, message: "Verifying company contacts" });
+      await onProgress({ progress: 80, message: "Preparing the report" });
+      return {
+        summary: "Done.",
+        buyers: [],
+        factories: [],
+        notes: []
+      };
+    }
+  });
+
+  assert.match(notifications[0], /started\. ETA: about 4 minutes/);
+  assert.match(notifications[1], /30% complete/);
+  assert.match(notifications[2], /55% complete/);
+  assert.match(notifications[3], /80% complete/);
+  const completed = await db.getTask(task.id);
+  assert.equal(completed.metadata.current_activity, "Completed");
+  assert.equal(completed.progress, 100);
 });
 
 test("Telegram /help, /tasks, /report, and /approve are available", async () => {

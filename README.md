@@ -260,8 +260,11 @@ follow-up question.
 
 Research commands such as `Find 20 buyers and 10 factories` are acknowledged
 immediately, stored as queued tasks, processed by the worker, and followed by a
-final Telegram report. Use `remember: ...` or `记住：...` to store an instruction
-in Lily's memory.
+final Telegram report. The acknowledgement includes an estimated duration, and
+the worker sends start plus 25%, 50%, and 75% milestone updates. `/status`
+shows the persisted status, percentage, current activity, and remaining ETA;
+`/tasks` lists recent persisted tasks and their ETAs. Use `remember: ...` or
+`记住：...` to store an instruction in Lily's memory.
 
 ### Safety
 
