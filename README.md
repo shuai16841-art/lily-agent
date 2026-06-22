@@ -358,6 +358,12 @@ GOOGLE_ACCESS_TOKEN=oauth-access-token-with-sheets-scope
 GOOGLE_SHEETS_SPREADSHEET_ID=your-spreadsheet-id
 ```
 
+Google Sheets is optional. Lily returns normal task results directly in
+Telegram and exposes the Sheets write tool only when the instruction explicitly
+asks to save, write, append, or export results to Google Sheets. Missing Google
+credentials never fail a normal task; an explicitly requested Sheets write is
+skipped and the results are still returned in Telegram.
+
 OAuth access tokens expire. In production, rotate the token or place a token
 refreshing proxy in front of these tools.
 

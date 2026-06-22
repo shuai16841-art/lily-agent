@@ -21,6 +21,11 @@ import {
   triggerBackgroundWorker
 } from "../lib/worker-trigger.js";
 import { isAuthorizedWorkerRequest } from "../api/worker.js";
+import {
+  getAgentToolDefinitions,
+  taskRequestsGoogleSheets
+} from "../lib/tools/registry.js";
+import { appendGoogleSheetRows } from "../lib/tools/sheets.js";
 
 async function memoryDb() {
   const db = new LilyDatabase(createClient({ url: ":memory:" }));
@@ -678,6 +683,180 @@ test("end-to-end research task calls live search and returns verified buyers", a
       delete process.env.TAVILY_API_KEY;
     } else {
       process.env.TAVILY_API_KEY = originalTavilyKey;
+    }
+  }
+});
+
+test("normal research tasks do not expose Google Sheets", () => {
+  const objective =
+    "Find 2 California auto repair shops that may buy jump starters.";
+  assert.equal(taskRequestsGoogleSheets(objective), false);
+  assert.equal(
+    getAgentToolDefinitions(objective).some(
+      (tool) => tool.function.name === "google_sheets_append"
+    ),
+    false
+  );
+});
+
+test("Google Sheets is exposed only when explicitly requested", () => {
+  const objective =
+    "Find 2 California auto repair shops and save the results to Google Sheets.";
+  assert.equal(taskRequestsGoogleSheets(objective), true);
+  assert.equal(
+    getAgentToolDefinitions(objective).some(
+      (tool) => tool.function.name === "google_sheets_append"
+    ),
+    true
+  );
+});
+
+test("missing Google Sheets credentials never fail a requested write", async () => {
+  const originalToken = process.env.GOOGLE_ACCESS_TOKEN;
+  const originalSpreadsheet = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+  delete process.env.GOOGLE_ACCESS_TOKEN;
+  delete process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+
+  try {
+    const result = await appendGoogleSheetRows({
+      rows: [["Company", "Website"], ["Example", "https://example.com"]]
+    });
+    assert.equal(result.skipped, true);
+    assert.match(result.reason, /Results will still be returned directly/);
+  } finally {
+    if (originalToken !== undefined) {
+      process.env.GOOGLE_ACCESS_TOKEN = originalToken;
+    }
+    if (originalSpreadsheet !== undefined) {
+      process.env.GOOGLE_SHEETS_SPREADSHEET_ID = originalSpreadsheet;
+    }
+  }
+});
+
+test("normal Telegram research completes without Google Sheets credentials", async () => {
+  const originalTavilyKey = process.env.TAVILY_API_KEY;
+  const originalGoogleToken = process.env.GOOGLE_ACCESS_TOKEN;
+  process.env.TAVILY_API_KEY = "test-tavily-key";
+  delete process.env.GOOGLE_ACCESS_TOKEN;
+  const db = await memoryDb();
+  const task = await createBackgroundTask({
+    userId: "john",
+    chatId: "42",
+    objective:
+      "Find 2 California auto repair shops that may buy jump starters.",
+    db
+  });
+  let modelCall = 0;
+  const seenTools = [];
+  const llmClient = {
+    chat: {
+      completions: {
+        create: async (request) => {
+          seenTools.push(request.tools.map((tool) => tool.function.name));
+          modelCall += 1;
+          if (modelCall === 1) {
+            return {
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [
+                      {
+                        id: "search-no-sheets",
+                        type: "function",
+                        function: {
+                          name: "web_search",
+                          arguments: JSON.stringify({
+                            query: "California auto repair shops",
+                            max_results: 2
+                          })
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            };
+          }
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    summary: "Found two repair shops.",
+                    buyers: [
+                      {
+                        company: "Repair Shop One",
+                        website: "https://one.example",
+                        evidence_url: "https://one.example/contact"
+                      },
+                      {
+                        company: "Repair Shop Two",
+                        website: "https://two.example",
+                        evidence_url: "https://two.example/contact"
+                      }
+                    ],
+                    factories: [],
+                    notes: []
+                  })
+                }
+              }
+            ]
+          };
+        }
+      }
+    }
+  };
+  const notifications = [];
+
+  try {
+    await runScheduledWorkerCycle({
+      db,
+      taskId: task.id,
+      llmClient,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [
+            {
+              title: "Repair Shop One",
+              url: "https://one.example/contact",
+              content: "California auto repair shop.",
+              score: 0.9
+            },
+            {
+              title: "Repair Shop Two",
+              url: "https://two.example/contact",
+              content: "California auto repair shop.",
+              score: 0.89
+            }
+          ]
+        })
+      }),
+      notify: async (chatId, text) => notifications.push(text)
+    });
+
+    assert.equal((await db.getTask(task.id)).status, "completed");
+    assert.equal((await db.listEntities(task.id)).length, 2);
+    assert.ok(
+      seenTools.every(
+        (tools) => !tools.includes("google_sheets_append")
+      )
+    );
+    assert.ok(notifications.some((text) => /Repair Shop One/.test(text)));
+  } finally {
+    if (originalTavilyKey === undefined) {
+      delete process.env.TAVILY_API_KEY;
+    } else {
+      process.env.TAVILY_API_KEY = originalTavilyKey;
+    }
+    if (originalGoogleToken === undefined) {
+      delete process.env.GOOGLE_ACCESS_TOKEN;
+    } else {
+      process.env.GOOGLE_ACCESS_TOKEN = originalGoogleToken;
     }
   }
 });
