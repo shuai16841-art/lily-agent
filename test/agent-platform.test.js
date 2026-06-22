@@ -6,6 +6,7 @@ import { LilyDatabase, resolveDatabaseConfig } from "../lib/db.js";
 import { processNextTask } from "../lib/queue.js";
 import {
   estimateTaskDurationSeconds,
+  formatProgressStatus,
   formatTaskEta,
   shouldRunInBackground
 } from "../lib/task-service.js";
@@ -261,6 +262,18 @@ test("task estimates scale with requested research volume", () => {
   );
 });
 
+test("progress status uses the required Task ID format", () => {
+  assert.equal(
+    formatProgressStatus("12345678-abcd", "Researching...", "about 4 minutes", 25),
+    [
+      "[Task ID: 12345678]",
+      "Status: Researching...",
+      "Progress: 25%",
+      "ETA: about 4 minutes"
+    ].join("\n")
+  );
+});
+
 test("Telegram creates a background task and acknowledges immediately", async () => {
   const db = await memoryDb();
   const sent = [];
@@ -289,8 +302,10 @@ test("Telegram creates a background task and acknowledges immediately", async ()
 
   assert.equal(result.ok, true);
   assert.ok(result.taskId);
-  assert.match(sent[0], /background task/);
-  assert.match(sent[0], /Estimated time: about 11 minutes/);
+  assert.match(sent[0], /\[Task ID: [a-f0-9]{8}\]/);
+  assert.match(sent[0], /Status: Received/);
+  assert.match(sent[0], /Progress: 0%/);
+  assert.match(sent[0], /ETA: about 11 minutes/);
   const storedTask = await db.getTask(result.taskId);
   assert.equal(storedTask.status, "queued");
   assert.equal(storedTask.metadata.estimated_duration_seconds, 660);
@@ -330,6 +345,8 @@ test("Telegram /status and /stop manage the latest task", async () => {
   );
 
   assert.match(replies[0], /queued/);
+  assert.match(replies[0], /\[Task ID: [a-f0-9]{8}\]/);
+  assert.match(replies[0], /Status: queued/);
   assert.match(replies[0], /Progress: 0%/);
   assert.match(replies[1], /stopped/);
   assert.equal((await db.getTask(task.id)).status, "stopped");
@@ -351,8 +368,11 @@ test("worker sends start ETA and milestone progress updates", async () => {
   await processNextTask({
     db,
     notify: async (chatId, text) => notifications.push(text),
+    statusIntervalMs: 10,
+    allowFastStatusInterval: true,
     runner: async (claimed, { onProgress }) => {
       await onProgress({ progress: 30, message: "Searching buyer directories" });
+      await new Promise((resolve) => setTimeout(resolve, 25));
       await onProgress({ progress: 55, message: "Verifying company contacts" });
       await onProgress({ progress: 80, message: "Preparing the report" });
       return {
@@ -364,13 +384,95 @@ test("worker sends start ETA and milestone progress updates", async () => {
     }
   });
 
-  assert.match(notifications[0], /started\. ETA: about 4 minutes/);
-  assert.match(notifications[1], /30% complete/);
-  assert.match(notifications[2], /55% complete/);
-  assert.match(notifications[3], /80% complete/);
+  assert.match(notifications[0], /Status: Researching\.\.\./);
+  assert.ok(
+    notifications.filter((message) => /Status: Researching\.\.\./.test(message))
+      .length >= 2
+  );
+  assert.ok(
+    notifications.some((message) => /Status: Verifying leads\.\.\./.test(message))
+  );
+  assert.ok(
+    notifications.some((message) =>
+      /Status: Compiling final report\.\.\./.test(message)
+    )
+  );
+  assert.ok(
+    notifications.some((message) => /Status: Completed/.test(message))
+  );
   const completed = await db.getTask(task.id);
   assert.equal(completed.metadata.current_activity, "Completed");
   assert.equal(completed.progress, 100);
+  assert.deepEqual(
+    completed.metadata.stage_history.map((item) => item.stage),
+    [
+      "Researching...",
+      "Verifying leads...",
+      "Compiling final report...",
+      "Completed"
+    ]
+  );
+});
+
+test("interrupted running tasks resume from the persisted checkpoint", async () => {
+  const db = await memoryDb();
+  const task = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Find buyers",
+    metadata: {
+      current_stage: "Verifying leads...",
+      current_activity: "Checking contact details",
+      checkpoint_iteration: 4,
+      stage_history: [
+        {
+          stage: "Received",
+          progress: 0,
+          activity: "Waiting",
+          created_at: "2026-01-01T00:00:00.000Z"
+        },
+        {
+          stage: "Verifying leads...",
+          progress: 55,
+          activity: "Checking contact details",
+          created_at: "2026-01-01T00:01:00.000Z"
+        }
+      ]
+    }
+  });
+  await db.client.execute({
+    sql: `UPDATE tasks SET status = 'running', progress = 55, updated_at = ?
+      WHERE id = ?`,
+    args: ["2026-01-01T00:02:00.000Z", task.id]
+  });
+  await db.saveEntities(task.id, "buyer", [
+    { company: "Saved Buyer", website: "https://saved.example" }
+  ]);
+  let resumedTask;
+
+  await processNextTask({
+    db,
+    recoverStaleAfterSeconds: 1,
+    notify: async () => {},
+    runner: async (claimed) => {
+      resumedTask = claimed;
+      return {
+        summary: "Resumed and completed.",
+        buyers: [],
+        factories: [],
+        notes: []
+      };
+    }
+  });
+
+  assert.equal(resumedTask.metadata.resume_pending, true);
+  assert.equal(resumedTask.metadata.checkpoint_iteration, 4);
+  assert.equal(resumedTask.progress, 55);
+  const completed = await db.getTask(task.id);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.metadata.recovery_count, 1);
+  assert.ok(completed.metadata.resumed_at);
+  assert.equal((await db.listEntities(task.id)).length, 1);
 });
 
 test("Telegram /help, /tasks, /report, and /approve are available", async () => {

@@ -6,6 +6,7 @@ import {
   createBackgroundTask,
   createEmailApprovalDraft,
   formatDuration,
+  formatProgressStatus,
   formatTaskEta,
   shouldRunInBackground
 } from "../lib/task-service.js";
@@ -226,9 +227,13 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
       .map((task) => {
         const eta = formatTaskEta(task);
         return [
-          `${shortId(task.id)} · ${task.status} · ${task.progress}%`,
-          task.objective,
-          eta ? `ETA: ${eta}` : ""
+          formatProgressStatus(
+            task.id,
+            task.metadata?.current_stage || task.status,
+            eta,
+            Number(task.progress || 0)
+          ),
+          task.objective
         ]
           .filter(Boolean)
           .join("\n");
@@ -247,12 +252,15 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
       return "Task not found.";
     }
     return [
-      `Task ${shortId(task.id)}: ${task.status}`,
-      `Progress: ${task.progress}%`,
+      formatProgressStatus(
+        task.id,
+        task.metadata?.current_stage || task.status,
+        formatTaskEta(task),
+        Number(task.progress || 0)
+      ),
       task.metadata?.current_activity
         ? `Current step: ${task.metadata.current_activity}`
         : "",
-      formatTaskEta(task) ? `ETA: ${formatTaskEta(task)}` : "",
       task.objective,
       task.error ? `Error: ${task.error}` : ""
     ]
@@ -450,9 +458,14 @@ async function processTelegramUpdateOnce(
         token,
         chatId,
         [
-          "Got it. I created a background task and will send the final report when it is finished.",
-          `Task ID: ${task.id}`,
-          `Estimated time: ${formatDuration(task.metadata.estimated_duration_seconds)}`,
+          formatProgressStatus(
+            task.id,
+            "Received",
+            formatDuration(task.metadata.estimated_duration_seconds),
+            0
+          ),
+          "",
+          "I created a background task and will keep reporting progress until completion.",
           "Use /status, /tasks, or /stop to manage it."
         ].join("\n"),
         fetchImpl

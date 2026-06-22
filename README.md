@@ -137,6 +137,8 @@ TELEGRAM_BOT_TOKEN=your-telegram-token
 TURSO_DATABASE_URL=libsql://your-database.turso.io
 TURSO_AUTH_TOKEN=your-turso-token
 LILY_WORKER_SECRET=choose-a-long-random-secret
+LILY_STATUS_INTERVAL_MS=45000
+LILY_TASK_STALE_AFTER_SECONDS=90
 CRON_SECRET=choose-a-long-random-secret
 ```
 
@@ -267,10 +269,15 @@ follow-up question.
 Research commands such as `Find 20 buyers and 10 factories` are acknowledged
 immediately, stored as queued tasks, processed by the worker, and followed by a
 final Telegram report. The acknowledgement includes an estimated duration, and
-the worker sends start plus 25%, 50%, and 75% milestone updates. `/status`
-shows the persisted status, percentage, current activity, and remaining ETA;
-`/tasks` lists recent persisted tasks and their ETAs. Use `remember: ...` or
-`记住：...` to store an instruction in Lily's memory.
+the worker sends stage transitions plus a heartbeat every 30–60 seconds
+(`LILY_STATUS_INTERVAL_MS`, default 45 seconds). Every message uses
+`[Task ID: xxxx]`, `Status`, progress, and ETA. `/status` shows the persisted
+status, percentage, current activity, and remaining ETA; `/tasks` lists recent
+persisted tasks and their ETAs. Stage history and iteration checkpoints are
+stored in the task metadata in Turso. A worker restart requeues stale running
+tasks after `LILY_TASK_STALE_AFTER_SECONDS` and resumes from the last checkpoint
+with previously saved entities. Use `remember: ...` or `记住：...` to store an
+instruction in Lily's memory.
 
 ### Safety
 
