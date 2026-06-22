@@ -1,6 +1,9 @@
 # lily-agent
 
-Lily Agent is a small cloud execution agent for John. It lets you send a task from your phone, calls the OpenAI API, and returns structured JSON results.
+Lily Agent is an execution assistant for John. Telegram messages can be answered
+immediately or converted into durable background tasks that use OpenAI, live web
+search, memory, structured storage, Gmail drafts, Google Sheets, and report
+generation.
 
 Lily's first job is B2B sourcing and lead generation, for example:
 
@@ -22,6 +25,10 @@ The API returns:
 - Node.js
 - Express for local development
 - OpenAI API
+- SQLite locally or Turso (SQLite-compatible) in production
+- Durable task queue and background worker
+- Tavily live web search
+- Gmail and Google Sheets APIs
 - Vercel Serverless Function for deployment
 - Wechaty worker for WeChat control
 - Resend email sending
@@ -33,6 +40,14 @@ The API returns:
 - `api/email.js` - Resend email sending endpoint
 - `api/wecom.js` - WeCom callback verification and message receiving endpoint
 - `api/telegram.js` - Telegram bot webhook endpoint
+- `api/worker.js` - authenticated one-task worker trigger
+- `worker.js` - long-running background queue worker
+- `lib/llm.js` - central OpenAI client
+- `lib/agent.js` - autonomous tool-calling loop
+- `lib/db.js` - tasks, memory, entities, drafts, actions, and deduplication
+- `lib/queue.js` - durable queue processor and Telegram progress/final reports
+- `lib/task-service.js` - task creation and email approval workflows
+- `lib/tools/` - web search, Gmail, Sheets, and report tools
 - `lib/lily.js` - shared Lily/OpenAI logic
 - `lib/email.js` - shared Resend email logic
 - `public/index.html` - mobile web control panel
@@ -56,27 +71,57 @@ npm install
 cp .env.example .env
 ```
 
-3. Edit `.env` and add your OpenAI API key:
+3. Edit `.env` and add the minimum local settings:
 
 ```bash
 OPENAI_API_KEY=sk-your-real-key
 OPENAI_MODEL=gpt-4o-mini
+TAVILY_API_KEY=tvly-your-key
+TELEGRAM_BOT_TOKEN=your-telegram-token
+LILY_DB_PATH=./data/lily.db
 PORT=3000
 ```
 
-4. Start Lily:
+4. Start Lily. The local Express process also starts the queue worker:
 
 ```bash
 npm run dev
 ```
 
-5. Test locally:
+Alternatively, run the API and worker as separate processes:
 
 ```bash
-curl -X POST http://localhost:3000/lily \
-  -H "Content-Type: application/json" \
-  -d "{\"task\":\"Find 10 California auto dealers who may import jump starters from China\"}"
+LILY_DISABLE_WORKER=true npm run dev
+npm run worker
 ```
+
+On Windows PowerShell:
+
+```powershell
+$env:LILY_DISABLE_WORKER="true"; npm run dev
+npm run worker
+```
+
+5. Run validation:
+
+```bash
+npm test
+npm run lint
+npm run test:agent
+```
+
+`test:agent` creates an isolated SQLite database, queues the requested
+5-buyer/5-factory sample objective, saves ten fixture-backed entities, and
+writes a final report under `outputs/test-agent/`. For live companies, run the
+same task through Telegram with valid OpenAI and Tavily keys.
+
+To run the exact live sourcing task outside Telegram:
+
+```bash
+npm run test:agent:live
+```
+
+This requires `OPENAI_API_KEY` and `TAVILY_API_KEY` and may incur API charges.
 
 ## Deploy to Vercel
 
@@ -87,9 +132,38 @@ curl -X POST http://localhost:3000/lily \
 ```bash
 OPENAI_API_KEY=sk-your-real-key
 OPENAI_MODEL=gpt-4o-mini
+TAVILY_API_KEY=tvly-your-key
+TELEGRAM_BOT_TOKEN=your-telegram-token
+TURSO_DATABASE_URL=libsql://your-database.turso.io
+TURSO_AUTH_TOKEN=your-turso-token
+LILY_WORKER_SECRET=choose-a-long-random-secret
+CRON_SECRET=choose-a-long-random-secret
 ```
 
 4. Deploy.
+
+### Background deployment options
+
+Vercel functions are not durable long-running processes and their local
+filesystem is ephemeral. Do not use a local `LILY_DB_PATH` for production
+background tasks on Vercel.
+
+Recommended:
+
+1. Keep the Telegram webhook on Vercel.
+2. Configure Turso so Vercel and the worker share the same SQLite-compatible
+   database.
+3. Deploy `npm run worker` on Railway, Render, Fly.io, or a VPS using the same
+   environment variables.
+
+For shorter tasks, an authenticated scheduler can call:
+
+```text
+GET https://lily-agent-rouge.vercel.app/api/worker
+Authorization: Bearer <LILY_WORKER_SECRET>
+```
+
+Each call processes one queued task. A long-running worker is more reliable.
 
 Production web panel:
 
@@ -173,6 +247,31 @@ itself. A tool runs only when the message is an explicit, complete
 `TOOL_ACTION`; otherwise Lily answers conversationally or asks one focused
 follow-up question.
 
+### Telegram task commands
+
+```text
+/status [task-id]
+/tasks
+/stop [task-id]
+/report [task-id]
+/approve <draft-id>
+/help
+```
+
+Research commands such as `Find 20 buyers and 10 factories` are acknowledged
+immediately, stored as queued tasks, processed by the worker, and followed by a
+final Telegram report. Use `remember: ...` or `记住：...` to store an instruction
+in Lily's memory.
+
+### Safety
+
+- Autonomous tools can research, write database records, append approved data
+  to Sheets, and generate files.
+- Email requests create Gmail drafts first.
+- No customer is contacted until John sends `/approve <draft-id>`.
+- Every tool action is logged in the `actions` table.
+- Telegram `update_id` values are stored to prevent duplicate processing.
+
 ## Phone Web Control
 
 Open this URL on your phone:
@@ -220,6 +319,34 @@ Read:
 ```text
 docs/EMAIL.md
 ```
+
+For autonomous Gmail drafts and approval-based sending, configure:
+
+```bash
+GMAIL_ACCESS_TOKEN=oauth-access-token-with-gmail.compose-and-gmail.send
+```
+
+For Google Sheets writes:
+
+```bash
+GOOGLE_ACCESS_TOKEN=oauth-access-token-with-sheets-scope
+GOOGLE_SHEETS_SPREADSHEET_ID=your-spreadsheet-id
+```
+
+OAuth access tokens expire. In production, rotate the token or place a token
+refreshing proxy in front of these tools.
+
+## Database contents
+
+Lily stores:
+
+- user instructions in `memories`
+- objectives, steps, status, progress, and results in `tasks`
+- buyers and factories in `entities`
+- email draft, approval, and send status in `email_drafts`
+- follow-up state in `entities.follow_up_status`
+- every tool attempt and result in `actions`
+- processed Telegram updates in `processed_updates`
 
 ## Example Response
 

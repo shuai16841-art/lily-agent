@@ -57,58 +57,27 @@ test("incomplete email command asks one clarifying question", async () => {
   assert.equal(sendCount, 0);
 });
 
-test("complete explicit email command executes EMAIL_SEND", async () => {
-  const sent = [];
+test("complete explicit email command requires approval outside Telegram", async () => {
   const result = await runLilyTask(
-    "Send an email to abc@example.com saying hello",
-    null,
-    {
-      sendEmailImpl: async (request) => {
-        sent.push(request.body);
-        return { id: "email-123" };
-      }
-    }
+    "Send an email to abc@example.com saying hello"
   );
 
-  assert.equal(result.action, "EMAIL_SENT");
+  assert.equal(result.action, "EMAIL_APPROVAL_REQUIRED");
   assert.equal(result.intent, "TOOL_ACTION");
-  assert.deepEqual(sent, [
-    {
-      to: "abc@example.com",
-      subject: "Message from Lily",
-      text: "hello"
-    }
-  ]);
+  assert.equal(result.emailTask.to, "abc@example.com");
+  assert.equal(result.emailTask.body, "hello");
 });
 
-test("Chinese email command with recipient and short body executes exactly once", async () => {
-  const sent = [];
+test("Chinese email command preserves recipient and short body for approval", async () => {
   const result = await runLilyTask(
-    "\u7528\u6211\u7684\u90ae\u7bb1\u7ed9 923785572@qq.com \u53d1\u4e2a\u90ae\u4ef6\uff0c\u8bf4\u6211\u5f88\u597d\u73b0\u5728",
-    null,
-    {
-      sendEmailImpl: async (request) => {
-        sent.push(request.body);
-        return { id: "email-qq-123" };
-      }
-    }
+    "\u7528\u6211\u7684\u90ae\u7bb1\u7ed9 923785572@qq.com \u53d1\u4e2a\u90ae\u4ef6\uff0c\u8bf4\u6211\u5f88\u597d\u73b0\u5728"
   );
 
   assert.equal(result.intent, "TOOL_ACTION");
-  assert.equal(result.action, "EMAIL_SENT");
-  assert.equal(result.to, "923785572@qq.com");
-  assert.equal(result.subject, "Message from Lily");
-  assert.deepEqual(sent, [
-    {
-      to: "923785572@qq.com",
-      subject: "Message from Lily",
-      text: "\u6211\u5f88\u597d\u73b0\u5728"
-    }
-  ]);
-  assert.equal(
-    formatLilyResult(result),
-    "Task completed: Email sent\nTo: 923785572@qq.com\nSubject: Message from Lily"
-  );
+  assert.equal(result.action, "EMAIL_APPROVAL_REQUIRED");
+  assert.equal(result.emailTask.to, "923785572@qq.com");
+  assert.equal(result.emailTask.subject, "Message from Lily");
+  assert.equal(result.emailTask.body, "\u6211\u5f88\u597d\u73b0\u5728");
 });
 
 test("non-send email wording is a command without tool execution", () => {
@@ -222,7 +191,7 @@ test("duplicate Telegram update_id is processed only once", async () => {
     update_id: 987654,
     message: {
       chat: { id: 42 },
-      text: "Find two leads"
+      text: "Summarize this note"
     }
   };
   const options = {
@@ -269,7 +238,7 @@ test("Telegram reports a send failure once and caches the failed update", async 
   const options = {
     token: "test-token",
     updateCache,
-    runTask: async () => {
+    createDraft: async () => {
       taskCount += 1;
       throw new Error("Resend rejected the sender domain");
     },

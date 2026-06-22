@@ -20,6 +20,10 @@
     {
       "src": "/api/telegram",
       "dest": "/api/telegram.js"
+    },
+    {
+      "src": "/api/worker",
+      "dest": "/api/worker.js"
     }
   ]
 }

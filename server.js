@@ -1,11 +1,18 @@
 import "dotenv/config";
 import express from "express";
+import { getDatabase } from "./lib/db.js";
 import { runLilyTask, sendJson } from "./lib/lily.js";
+import { startQueueWorker } from "./lib/queue.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json({ limit: "1mb" }));
+
+await getDatabase().initialize();
+if (process.env.LILY_DISABLE_WORKER !== "true") {
+  startQueueWorker();
+}
 
 app.get("/", (req, res) => {
   res.json({
