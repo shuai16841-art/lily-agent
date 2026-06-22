@@ -16,6 +16,10 @@ import {
   shouldRunInBackground
 } from "../lib/task-service.js";
 import { processTelegramUpdate } from "../api/telegram.js";
+import {
+  resolveWorkerUrl,
+  triggerBackgroundWorker
+} from "../lib/worker-trigger.js";
 import { isAuthorizedWorkerRequest } from "../api/worker.js";
 
 async function memoryDb() {
@@ -283,6 +287,7 @@ test("progress status uses the required Task ID format", () => {
 test("Telegram creates a background task and acknowledges immediately", async () => {
   const db = await memoryDb();
   const sent = [];
+  const scheduled = [];
   const result = await processTelegramUpdate(
     {
       update_id: 7001,
@@ -295,6 +300,10 @@ test("Telegram creates a background task and acknowledges immediately", async ()
     {
       db,
       token: "test-token",
+      scheduleWorker: (details) => {
+        scheduled.push(details);
+        return true;
+      },
       fetchImpl: async (url, request) => {
         sent.push(JSON.parse(request.body).text);
         return {
@@ -308,6 +317,8 @@ test("Telegram creates a background task and acknowledges immediately", async ()
 
   assert.equal(result.ok, true);
   assert.ok(result.taskId);
+  assert.equal(result.workerScheduled, true);
+  assert.deepEqual(scheduled, [{ taskId: result.taskId }]);
   assert.match(sent[0], /\[Task ID: [a-f0-9]{8}\]/);
   assert.match(sent[0], /Status: Received/);
   assert.match(sent[0], /Progress: 0%/);
@@ -505,15 +516,52 @@ test("worker endpoint accepts CRON_SECRET and legacy worker secret", () => {
   );
 });
 
-test("vercel production config schedules the worker every minute", () => {
+test("Vercel production config supports a long worker without an unsupported Hobby cron", () => {
   const config = JSON.parse(fs.readFileSync("vercel.json", "utf8"));
-  assert.deepEqual(config.crons, [
-    {
-      path: "/api/worker",
-      schedule: "* * * * *"
-    }
-  ]);
+  assert.equal(config.crons, undefined);
   assert.equal(config.functions["api/worker.js"].maxDuration, 300);
+});
+
+test("Telegram can trigger the authenticated production worker after responding", async () => {
+  const requests = [];
+  const backgroundJobs = [];
+  const req = {
+    headers: {
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "lily-agent-rouge.vercel.app"
+    }
+  };
+
+  assert.equal(
+    resolveWorkerUrl(req),
+    "https://lily-agent-rouge.vercel.app/api/worker"
+  );
+  const scheduled = triggerBackgroundWorker({
+    req,
+    secret: "worker-secret",
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => ""
+      };
+    },
+    waitUntilImpl: (job) => backgroundJobs.push(job)
+  });
+
+  assert.equal(scheduled, true);
+  assert.equal(backgroundJobs.length, 1);
+  await backgroundJobs[0];
+  assert.equal(
+    requests[0].url,
+    "https://lily-agent-rouge.vercel.app/api/worker"
+  );
+  assert.equal(requests[0].options.method, "POST");
+  assert.equal(
+    requests[0].options.headers.Authorization,
+    "Bearer worker-secret"
+  );
 });
 
 test("interrupted running tasks resume from the persisted checkpoint", async () => {

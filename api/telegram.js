@@ -1,6 +1,7 @@
 import { classifyTaskIntent, runLilyTask, sendJson } from "../lib/lily.js";
 import { getDatabase } from "../lib/db.js";
 import { formatTaskReport } from "../lib/queue.js";
+import { triggerBackgroundWorker } from "../lib/worker-trigger.js";
 import {
   approveEmailDraft,
   createBackgroundTask,
@@ -325,7 +326,8 @@ async function processTelegramUpdateOnce(
     db = getDatabase(),
     createTask = createBackgroundTask,
     createDraft = createEmailApprovalDraft,
-    approveDraft = approveEmailDraft
+    approveDraft = approveEmailDraft,
+    scheduleWorker = () => false
   } = {}
 ) {
   const message = update?.message || update?.edited_message;
@@ -356,6 +358,9 @@ async function processTelegramUpdateOnce(
         approveDraft
       });
       await sendTelegramMessage(token, chatId, reply || "Unknown command. Use /help.", fetchImpl);
+      if (/^\/status(?:@\w+)?(?:\s|$)/i.test(text.trim()) && db.isPersistent()) {
+        scheduleWorker();
+      }
       return {
         ok: true,
         chatId,
@@ -470,11 +475,13 @@ async function processTelegramUpdateOnce(
         ].join("\n"),
         fetchImpl
       );
+      const workerScheduled = scheduleWorker({ taskId: task.id });
       return {
         ok: true,
         chatId,
         intent: classification.intent,
         taskId: task.id,
+        workerScheduled,
         messagesSent: 1
       };
     }
@@ -590,7 +597,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const result = await processTelegramUpdate(req.body);
+    const result = await processTelegramUpdate(req.body, {
+      scheduleWorker: () => triggerBackgroundWorker({ req })
+    });
     return sendJson(res, 200, result);
   } catch (error) {
     console.error("[Telegram webhook] Unhandled error:", error);

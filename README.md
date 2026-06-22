@@ -139,7 +139,6 @@ TURSO_AUTH_TOKEN=your-turso-token
 LILY_WORKER_SECRET=choose-a-long-random-secret
 LILY_STATUS_INTERVAL_MS=45000
 LILY_TASK_STALE_AFTER_SECONDS=90
-CRON_SECRET=choose-a-long-random-secret
 ```
 
 4. Deploy.
@@ -164,21 +163,24 @@ Recommended:
 3. Deploy `npm run worker` on Railway, Render, Fly.io, or a VPS using the same
    environment variables.
 
-For shorter tasks, an authenticated scheduler can call:
+When Telegram creates a background task, the webhook immediately starts the
+authenticated Vercel worker with `waitUntil`. The worker claims the queued task,
+persists stage changes in Turso, and sends Telegram heartbeats every 45 seconds
+until the task completes or fails. Sending `/status` also starts the worker
+again, which provides a manual recovery path for an interrupted invocation.
+
+An authenticated external scheduler or long-running worker can also call:
 
 ```text
 GET https://lily-agent-rouge.vercel.app/api/worker
 Authorization: Bearer <LILY_WORKER_SECRET>
 ```
 
-Each call processes one queued task. A long-running worker is more reliable.
-
-The included Vercel Cron calls `/api/worker` once per minute. Vercel Cron does
-not support a 45-second schedule; on Pro/Enterprise its minimum interval is one
-minute. The worker invocation itself keeps a 45-second heartbeat while a task
-is running, and each later cron invocation also checks Turso for running tasks
-whose heartbeat is due. Configure `CRON_SECRET`; Vercel sends it automatically
-as `Authorization: Bearer <CRON_SECRET>`.
+Each call processes one queued task and checks running tasks for a due
+heartbeat. Vercel Hobby cron schedules cannot run every minute, so this project
+does not include an unsupported frequent cron configuration. For tasks that
+may exceed Vercel's function duration, `npm run worker` on Railway, Render,
+Fly.io, or a VPS remains the durable option.
 
 Production web panel:
 
