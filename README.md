@@ -148,6 +148,12 @@ Vercel functions are not durable long-running processes and their local
 filesystem is ephemeral. Do not use a local `LILY_DB_PATH` for production
 background tasks on Vercel.
 
+If Turso is temporarily missing, `/api/telegram` falls back to in-memory
+storage so ordinary conversation still works. Database-dependent commands such
+as `/status`, `/tasks`, background research, memory, and email approvals return
+clear setup guidance until `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are
+configured. The fallback is temporary and is not suitable for task persistence.
+
 Recommended:
 
 1. Keep the Telegram webhook on Vercel.

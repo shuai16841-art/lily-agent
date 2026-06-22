@@ -192,6 +192,13 @@ function shortId(id) {
   return id?.slice(0, 8) || "";
 }
 
+function databaseSetupMessage() {
+  return [
+    "Turso task storage is not configured, so persistent task features are temporarily unavailable.",
+    "Add TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel, then redeploy."
+  ].join("\n");
+}
+
 async function handleTelegramCommand(text, { userId, chatId, db, approveDraft }) {
   const [command, argument] = text.trim().split(/\s+/, 2);
 
@@ -208,6 +215,9 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
   }
 
   if (command === "/tasks") {
+    if (!db.isPersistent()) {
+      return databaseSetupMessage();
+    }
     const tasks = await db.listTasks(userId);
     if (!tasks.length) {
       return "No tasks yet.";
@@ -227,6 +237,9 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
   }
 
   if (command === "/status") {
+    if (!db.isPersistent()) {
+      return databaseSetupMessage();
+    }
     const task = argument
       ? await db.getTaskByPrefix(argument, userId)
       : await db.getLatestTask(userId);
@@ -248,6 +261,9 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
   }
 
   if (command === "/stop") {
+    if (!db.isPersistent()) {
+      return databaseSetupMessage();
+    }
     const task = argument
       ? await db.getTaskByPrefix(argument, userId)
       : await db.getLatestTask(userId);
@@ -259,6 +275,9 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
   }
 
   if (command === "/report") {
+    if (!db.isPersistent()) {
+      return databaseSetupMessage();
+    }
     const task = argument
       ? await db.getTaskByPrefix(argument, userId)
       : await db.getLatestTask(userId);
@@ -272,6 +291,9 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
   }
 
   if (command === "/approve") {
+    if (!db.isPersistent()) {
+      return databaseSetupMessage();
+    }
     if (!argument) {
       return "Usage: /approve <draft-id>";
     }
@@ -336,6 +358,15 @@ async function processTelegramUpdateOnce(
 
     const memoryMatch = text.trim().match(/^(?:remember|记住)[:：]?\s*(.+)$/i);
     if (memoryMatch) {
+      if (!db.isPersistent()) {
+        await sendTelegramMessage(token, chatId, databaseSetupMessage(), fetchImpl);
+        return {
+          ok: true,
+          chatId,
+          databaseConfigured: false,
+          messagesSent: 1
+        };
+      }
       await db.saveMemory({
         userId,
         category: "instruction",
@@ -358,6 +389,16 @@ async function processTelegramUpdateOnce(
       classification.action === "EXECUTE" &&
       classification.tool === "EMAIL_SEND"
     ) {
+      if (!db.isPersistent()) {
+        await sendTelegramMessage(token, chatId, databaseSetupMessage(), fetchImpl);
+        return {
+          ok: true,
+          chatId,
+          intent: classification.intent,
+          databaseConfigured: false,
+          messagesSent: 1
+        };
+      }
       const draft = await createDraft({
         userId,
         chatId,
@@ -389,6 +430,16 @@ async function processTelegramUpdateOnce(
       classification.intent === "COMMAND" &&
       shouldRunInBackground(text.trim())
     ) {
+      if (!db.isPersistent()) {
+        await sendTelegramMessage(token, chatId, databaseSetupMessage(), fetchImpl);
+        return {
+          ok: true,
+          chatId,
+          intent: classification.intent,
+          databaseConfigured: false,
+          messagesSent: 1
+        };
+      }
       const task = await createTask({
         userId,
         chatId,
@@ -429,6 +480,7 @@ async function processTelegramUpdateOnce(
       messagesSent: chunks.length
     };
   } catch (error) {
+    console.error("[Telegram webhook] Processing failed:", error);
     const errorText = `Lily could not complete that request: ${error.message || "Unexpected error"}`;
 
     try {
@@ -470,14 +522,19 @@ export async function processTelegramUpdate(
   }
 
   if (!options.updateCache) {
-    const firstDelivery = await db.markUpdateProcessed(updateId);
-    if (!firstDelivery) {
-      return {
-        ok: true,
-        ignored: true,
-        duplicate: true,
-        updateId
-      };
+    try {
+      const firstDelivery = await db.markUpdateProcessed(updateId);
+      if (!firstDelivery) {
+        return {
+          ok: true,
+          ignored: true,
+          duplicate: true,
+          updateId
+        };
+      }
+    } catch (error) {
+      console.error("[Telegram webhook] Database deduplication failed:", error);
+      // Continue processing so a database outage does not take down Telegram.
     }
     return processTelegramUpdateOnce(update, { ...options, db });
   }
@@ -523,6 +580,7 @@ export default async function handler(req, res) {
     const result = await processTelegramUpdate(req.body);
     return sendJson(res, 200, result);
   } catch (error) {
+    console.error("[Telegram webhook] Unhandled error:", error);
     return sendJson(res, error.statusCode || 500, {
       ok: false,
       error: error.message || "Unexpected server error"

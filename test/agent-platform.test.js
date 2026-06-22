@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createClient } from "@libsql/client";
 
-import { LilyDatabase } from "../lib/db.js";
+import { LilyDatabase, resolveDatabaseConfig } from "../lib/db.js";
 import { processNextTask } from "../lib/queue.js";
 import {
   estimateTaskDurationSeconds,
@@ -16,6 +16,190 @@ async function memoryDb() {
   await db.initialize();
   return db;
 }
+
+async function ephemeralServerlessDb() {
+  const db = new LilyDatabase(createClient({ url: ":memory:" }), {
+    storageMode: "memory",
+    persistent: false,
+    warning: "Turso is not configured."
+  });
+  await db.initialize();
+  return db;
+}
+
+test("missing Turso variables use a safe serverless memory fallback", () => {
+  const config = resolveDatabaseConfig({
+    VERCEL: "1"
+  });
+
+  assert.deepEqual(config.client, { url: ":memory:" });
+  assert.equal(config.storageMode, "memory");
+  assert.equal(config.persistent, false);
+  assert.match(config.warning, /Turso is not fully configured/);
+});
+
+test("partially configured Turso also uses the safe serverless fallback", () => {
+  const missingToken = resolveDatabaseConfig({
+    VERCEL: "1",
+    TURSO_DATABASE_URL: "libsql://example.turso.io"
+  });
+  const missingUrl = resolveDatabaseConfig({
+    VERCEL: "1",
+    TURSO_AUTH_TOKEN: "token"
+  });
+
+  assert.equal(missingToken.persistent, false);
+  assert.match(missingToken.warning, /TURSO_AUTH_TOKEN missing/);
+  assert.equal(missingUrl.persistent, false);
+  assert.match(missingUrl.warning, /TURSO_DATABASE_URL missing/);
+});
+
+test("/status and /tasks return setup guidance without a production database", async () => {
+  const db = await ephemeralServerlessDb();
+  const replies = [];
+  const fetchImpl = async (url, request) => {
+    replies.push(JSON.parse(request.body).text);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true })
+    };
+  };
+
+  for (const [index, text] of ["/status", "/tasks"].entries()) {
+    const result = await processTelegramUpdate(
+      {
+        update_id: 6000 + index,
+        message: {
+          from: { id: 100 },
+          chat: { id: 100 },
+          text
+        }
+      },
+      {
+        db,
+        token: "test-token",
+        fetchImpl
+      }
+    );
+    assert.equal(result.ok, true);
+  }
+
+  assert.equal(replies.length, 2);
+  assert.match(replies[0], /TURSO_DATABASE_URL/);
+  assert.match(replies[1], /TURSO_AUTH_TOKEN/);
+});
+
+test("normal Telegram replies still work with the serverless memory fallback", async () => {
+  const db = await ephemeralServerlessDb();
+  const replies = [];
+  const result = await processTelegramUpdate(
+    {
+      update_id: 6100,
+      message: {
+        from: { id: 100 },
+        chat: { id: 100 },
+        text: "Hello"
+      }
+    },
+    {
+      db,
+      token: "test-token",
+      runTask: async () => ({
+        intent: "CASUAL",
+        response: "Hello John."
+      }),
+      fetchImpl: async (url, request) => {
+        replies.push(JSON.parse(request.body).text);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true })
+        };
+      }
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(replies, ["Hello John."]);
+});
+
+test("background requests explain that Turso is required instead of crashing", async () => {
+  const db = await ephemeralServerlessDb();
+  const replies = [];
+  const result = await processTelegramUpdate(
+    {
+      update_id: 6200,
+      message: {
+        from: { id: 100 },
+        chat: { id: 100 },
+        text: "Find 5 buyers and 5 factories"
+      }
+    },
+    {
+      db,
+      token: "test-token",
+      fetchImpl: async (url, request) => {
+        replies.push(JSON.parse(request.body).text);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true })
+        };
+      }
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.databaseConfigured, false);
+  assert.match(replies[0], /Turso/);
+});
+
+test("database deduplication errors are logged and do not abort Telegram", async () => {
+  const replies = [];
+  const logged = [];
+  const originalError = console.error;
+  console.error = (...args) => logged.push(args.map(String).join(" "));
+
+  try {
+    const result = await processTelegramUpdate(
+      {
+        update_id: 6300,
+        message: {
+          from: { id: 100 },
+          chat: { id: 100 },
+          text: "Hello"
+        }
+      },
+      {
+        db: {
+          markUpdateProcessed: async () => {
+            throw new Error("database offline");
+          }
+        },
+        token: "test-token",
+        runTask: async () => ({
+          intent: "CASUAL",
+          response: "Hello John."
+        }),
+        fetchImpl: async (url, request) => {
+          replies.push(JSON.parse(request.body).text);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true })
+          };
+        }
+      }
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(replies, ["Hello John."]);
+    assert.match(logged.join("\n"), /database offline/);
+  } finally {
+    console.error = originalError;
+  }
+});
 
 test("SQLite task queue stores tasks, entities, and final result", async () => {
   const db = await memoryDb();
