@@ -10,6 +10,7 @@ import {
   runScheduledWorkerCycle
 } from "../lib/queue.js";
 import {
+  createBackgroundTask,
   estimateTaskDurationSeconds,
   formatProgressStatus,
   formatTaskEta,
@@ -17,7 +18,6 @@ import {
 } from "../lib/task-service.js";
 import { processTelegramUpdate } from "../api/telegram.js";
 import {
-  resolveWorkerUrl,
   triggerBackgroundWorker
 } from "../lib/worker-trigger.js";
 import { isAuthorizedWorkerRequest } from "../api/worker.js";
@@ -492,6 +492,196 @@ test("scheduled worker cycle claims queued work and completes it", async () => {
   assert.equal((await db.getTask(task.id)).status, "completed");
 });
 
+test("worker claims the exact Telegram task instead of an older queued task", async () => {
+  const db = await memoryDb();
+  const olderTask = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Older queued task"
+  });
+  const requestedTask = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Find 2 California auto repair shops that may buy jump starters."
+  });
+
+  const cycle = await runScheduledWorkerCycle({
+    db,
+    taskId: requestedTask.id,
+    notify: async () => {},
+    runner: async () => ({
+      summary: "Requested task completed.",
+      buyers: [],
+      factories: [],
+      notes: []
+    })
+  });
+
+  assert.equal(cycle.processedTaskId, requestedTask.id);
+  assert.equal((await db.getTask(requestedTask.id)).status, "completed");
+  assert.equal((await db.getTask(olderTask.id)).status, "queued");
+});
+
+test("end-to-end research task calls live search and returns verified buyers", async () => {
+  const originalTavilyKey = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = "test-tavily-key";
+  const db = await memoryDb();
+  const task = await createBackgroundTask({
+    userId: "john",
+    chatId: "42",
+    objective:
+      "Find 2 California auto repair shops that may buy jump starters.",
+    db
+  });
+  const notifications = [];
+  const searchRequests = [];
+  let modelCall = 0;
+  const llmClient = {
+    chat: {
+      completions: {
+        create: async () => {
+          modelCall += 1;
+          if (modelCall === 1) {
+            return {
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [
+                      {
+                        id: "search-1",
+                        type: "function",
+                        function: {
+                          name: "web_search",
+                          arguments: JSON.stringify({
+                            query:
+                              "California auto repair shops jump starter buyer contact",
+                            max_results: 5
+                          })
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            };
+          }
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: JSON.stringify({
+                    summary: "Found two verified California repair shops.",
+                    buyers: [
+                      {
+                        company: "Golden State Auto Repair",
+                        website: "https://goldenstate.example",
+                        contact: "Service Manager",
+                        email: "service@goldenstate.example",
+                        phone: "+1-555-0101",
+                        evidence_url: "https://goldenstate.example/contact"
+                      },
+                      {
+                        company: "Bay Area Car Care",
+                        website: "https://bayareacarcare.example",
+                        contact: "Owner",
+                        email: "owner@bayareacarcare.example",
+                        phone: "+1-555-0102",
+                        evidence_url: "https://bayareacarcare.example/contact"
+                      }
+                    ],
+                    factories: [],
+                    notes: ["Verify purchasing interest before outreach."]
+                  })
+                }
+              }
+            ]
+          };
+        }
+      }
+    }
+  };
+
+  try {
+    const cycle = await runScheduledWorkerCycle({
+      db,
+      taskId: task.id,
+      llmClient,
+      fetchImpl: async (url, options) => {
+        searchRequests.push({
+          url,
+          body: JSON.parse(options.body)
+        });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            results: [
+              {
+                title: "Golden State Auto Repair",
+                url: "https://goldenstate.example/contact",
+                content: "California repair shop contact page.",
+                score: 0.95
+              },
+              {
+                title: "Bay Area Car Care",
+                url: "https://bayareacarcare.example/contact",
+                content: "Bay Area automotive repair contact page.",
+                score: 0.92
+              }
+            ]
+          })
+        };
+      },
+      notify: async (chatId, text) => notifications.push(text)
+    });
+
+    assert.equal(cycle.processedTaskId, task.id);
+    assert.equal(searchRequests.length, 1);
+    assert.equal(searchRequests[0].url, "https://api.tavily.com/search");
+    assert.match(searchRequests[0].body.query, /California auto repair shops/);
+    const completed = await db.getTask(task.id);
+    const buyers = await db.listEntities(task.id);
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.progress, 100);
+    assert.equal(buyers.length, 2);
+    assert.deepEqual(
+      completed.metadata.stage_history.map((item) => item.stage),
+      [
+        "Received",
+        "Researching...",
+        "Verifying leads...",
+        "Compiling final report...",
+        "Completed"
+      ]
+    );
+    assert.ok(notifications.some((text) => /Status: Researching/.test(text)));
+    assert.ok(notifications.some((text) => /Status: Verifying/.test(text)));
+    assert.ok(notifications.some((text) => /Status: Completed/.test(text)));
+    assert.ok(
+      notifications.some((text) => /Golden State Auto Repair/.test(text))
+    );
+    const actions = await db.client.execute(
+      "SELECT tool, status FROM actions ORDER BY created_at ASC"
+    );
+    assert.deepEqual(
+      actions.rows.map((row) => [row.tool, row.status]),
+      [
+        ["web_search", "started"],
+        ["web_search", "completed"]
+      ]
+    );
+  } finally {
+    if (originalTavilyKey === undefined) {
+      delete process.env.TAVILY_API_KEY;
+    } else {
+      process.env.TAVILY_API_KEY = originalTavilyKey;
+    }
+  }
+});
+
 test("worker endpoint accepts CRON_SECRET and legacy worker secret", () => {
   assert.equal(
     isAuthorizedWorkerRequest(
@@ -519,33 +709,17 @@ test("worker endpoint accepts CRON_SECRET and legacy worker secret", () => {
 test("Vercel production config supports a long worker without an unsupported Hobby cron", () => {
   const config = JSON.parse(fs.readFileSync("vercel.json", "utf8"));
   assert.equal(config.crons, undefined);
+  assert.equal(config.functions["api/telegram.js"].maxDuration, 300);
   assert.equal(config.functions["api/worker.js"].maxDuration, 300);
 });
 
-test("Telegram can trigger the authenticated production worker after responding", async () => {
-  const requests = [];
+test("Telegram runs the exact queued task after responding", async () => {
   const backgroundJobs = [];
-  const req = {
-    headers: {
-      "x-forwarded-proto": "https",
-      "x-forwarded-host": "lily-agent-rouge.vercel.app"
-    }
-  };
-
-  assert.equal(
-    resolveWorkerUrl(req),
-    "https://lily-agent-rouge.vercel.app/api/worker"
-  );
+  const calls = [];
   const scheduled = triggerBackgroundWorker({
-    req,
-    secret: "worker-secret",
-    fetchImpl: async (url, options) => {
-      requests.push({ url, options });
-      return {
-        ok: true,
-        status: 200,
-        text: async () => ""
-      };
+    taskId: "task-123",
+    runWorker: async (options) => {
+      calls.push(options);
     },
     waitUntilImpl: (job) => backgroundJobs.push(job)
   });
@@ -553,15 +727,7 @@ test("Telegram can trigger the authenticated production worker after responding"
   assert.equal(scheduled, true);
   assert.equal(backgroundJobs.length, 1);
   await backgroundJobs[0];
-  assert.equal(
-    requests[0].url,
-    "https://lily-agent-rouge.vercel.app/api/worker"
-  );
-  assert.equal(requests[0].options.method, "POST");
-  assert.equal(
-    requests[0].options.headers.Authorization,
-    "Bearer worker-secret"
-  );
+  assert.deepEqual(calls, [{ taskId: "task-123" }]);
 });
 
 test("interrupted running tasks resume from the persisted checkpoint", async () => {

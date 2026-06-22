@@ -164,7 +164,7 @@ Recommended:
    environment variables.
 
 When Telegram creates a background task, the webhook immediately starts the
-authenticated Vercel worker with `waitUntil`. The worker claims the queued task,
+Vercel worker directly with `waitUntil`. The worker claims that exact Task ID,
 persists stage changes in Turso, and sends Telegram heartbeats every 45 seconds
 until the task completes or fails. Sending `/status` also starts the worker
 again, which provides a manual recovery path for an interrupted invocation.

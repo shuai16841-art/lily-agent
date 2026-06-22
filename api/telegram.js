@@ -598,7 +598,8 @@ export default async function handler(req, res) {
 
   try {
     const result = await processTelegramUpdate(req.body, {
-      scheduleWorker: () => triggerBackgroundWorker({ req })
+      scheduleWorker: ({ taskId } = {}) =>
+        triggerBackgroundWorker({ taskId })
     });
     return sendJson(res, 200, result);
   } catch (error) {
