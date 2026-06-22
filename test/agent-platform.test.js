@@ -21,6 +21,7 @@ import {
   triggerBackgroundWorker
 } from "../lib/worker-trigger.js";
 import { isAuthorizedWorkerRequest } from "../api/worker.js";
+import { parseAgentResult } from "../lib/agent.js";
 import {
   getAgentToolDefinitions,
   taskRequestsGoogleSheets
@@ -859,6 +860,71 @@ test("normal Telegram research completes without Google Sheets credentials", asy
       process.env.GOOGLE_ACCESS_TOKEN = originalGoogleToken;
     }
   }
+});
+
+test("agent extracts JSON when the model wraps it in extra text", () => {
+  const result = parseAgentResult(
+    'I have gathered the results.\n{"summary":"Done","buyers":[],"factories":[],"notes":[]}\nHope this helps.',
+    "Find buyers"
+  );
+  assert.equal(result.summary, "Done");
+  assert.deepEqual(result.buyers, []);
+  assert.equal(result.raw_result, undefined);
+});
+
+test("non-JSON agent response completes as a readable Telegram report", async () => {
+  const db = await memoryDb();
+  const task = await createBackgroundTask({
+    userId: "john",
+    chatId: "42",
+    objective:
+      "Find 2 California auto repair shops that may buy jump starters.",
+    db
+  });
+  const notifications = [];
+  const llmRequests = [];
+  const plainText =
+    "I have gathered two California auto repair shops that may be suitable buyers.\n\n1. Example Auto Repair — https://example-auto.test\n2. Sample Car Care — https://sample-care.test";
+  const llmClient = {
+    chat: {
+      completions: {
+        create: async (request) => {
+          llmRequests.push(request);
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: plainText
+                }
+              }
+            ]
+          };
+        }
+      }
+    }
+  };
+
+  const cycle = await runScheduledWorkerCycle({
+    db,
+    taskId: task.id,
+    llmClient,
+    notify: async (chatId, text) => notifications.push(text)
+  });
+
+  const completed = await db.getTask(task.id);
+  assert.equal(cycle.processedTaskId, task.id);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.progress, 100);
+  assert.equal(completed.result.output_format, "plain_text_fallback");
+  assert.equal(llmRequests[0].response_format.type, "json_schema");
+  assert.equal(llmRequests[0].response_format.json_schema.strict, true);
+  assert.ok(notifications.some((text) => /Status: Completed/.test(text)));
+  assert.ok(notifications.some((text) => /I have gathered/.test(text)));
+  assert.ok(notifications.some((text) => /Example Auto Repair/.test(text)));
+  assert.ok(
+    notifications.every((text) => !/Unexpected token/.test(text))
+  );
 });
 
 test("worker endpoint accepts CRON_SECRET and legacy worker secret", () => {
