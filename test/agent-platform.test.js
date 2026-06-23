@@ -10,7 +10,9 @@ import {
   runScheduledWorkerCycle
 } from "../lib/queue.js";
 import {
+  approveEmailDraft,
   createBackgroundTask,
+  createEmailApprovalDraft,
   estimateTaskDurationSeconds,
   formatProgressStatus,
   formatTaskEta,
@@ -27,6 +29,8 @@ import {
   taskRequestsGoogleSheets
 } from "../lib/tools/registry.js";
 import { appendGoogleSheetRows } from "../lib/tools/sheets.js";
+import { processLeads } from "../lib/lead-pipeline.js";
+import { formatCleanResult } from "../lib/output-formatter.js";
 
 async function memoryDb() {
   const db = new LilyDatabase(createClient({ url: ":memory:" }));
@@ -709,7 +713,7 @@ test("normal research tasks do not expose Google Sheets", () => {
   );
 });
 
-test("Google Sheets is exposed only when explicitly requested", () => {
+test("research mode never exposes Google Sheets even when mentioned", () => {
   const objective =
     "Find 2 California auto repair shops and save the results to Google Sheets.";
   assert.equal(taskRequestsGoogleSheets(objective), true);
@@ -717,8 +721,76 @@ test("Google Sheets is exposed only when explicitly requested", () => {
     getAgentToolDefinitions(objective).some(
       (tool) => tool.function.name === "google_sheets_append"
     ),
-    true
+    false
   );
+});
+
+test("lead pipeline removes directories, duplicates, ads, and low-quality rows", () => {
+  const leads = processLeads([
+    {
+      company: "Qualified Auto Repair",
+      website: "https://qualified-auto.example",
+      email: "sales@qualified-auto.example",
+      phone: "555-0100",
+      location: "California",
+      relevance: "Automotive service business that may resell jump starters",
+      confidence_score: 92,
+      scraped_html: "<div>ignored</div>"
+    },
+    {
+      company: "Qualified Auto Repair",
+      website: "https://qualified-auto.example",
+      relevance: "Duplicate",
+      confidence_score: 50
+    },
+    {
+      company: "Directory Result",
+      website: "https://www.yelp.com/biz/example",
+      relevance: "Directory listing",
+      confidence_score: 90
+    },
+    {
+      company: "Advertisement",
+      website: "https://ad.example",
+      relevance: "",
+      confidence_score: 90
+    }
+  ]);
+
+  assert.equal(leads.length, 1);
+  assert.deepEqual(Object.keys(leads[0]), [
+    "company",
+    "website",
+    "email",
+    "phone",
+    "location",
+    "relevance",
+    "confidence_score"
+  ]);
+});
+
+test("permanent formatter hides JSON, scraped text, tool args, and markdown", () => {
+  const output = formatCleanResult({
+    summary: "# Verified leads",
+    buyers: [
+      {
+        company: "Qualified Auto Repair",
+        website: "https://qualified-auto.example",
+        email: "sales@qualified-auto.example",
+        phone: "555-0100",
+        location: "California",
+        relevance: "Potential jump-starter buyer",
+        confidence_score: 90,
+        raw_scraped_text: "SCRAPED SECRET",
+        tool_args: { query: "secret query" }
+      }
+    ],
+    notes: ["```json\n{\"hidden\":true}\n```", "- Ready for review"]
+  });
+
+  assert.match(output, /Qualified Auto Repair/);
+  assert.match(output, /Confidence: 90%/);
+  assert.doesNotMatch(output, /SCRAPED SECRET|secret query|hidden|```|^\s*#/m);
 });
 
 test("missing Google Sheets credentials never fail a requested write", async () => {
@@ -925,12 +997,14 @@ test("non-JSON agent response completes as a readable Telegram report", async ()
   assert.equal(cycle.processedTaskId, task.id);
   assert.equal(completed.status, "completed");
   assert.equal(completed.progress, 100);
-  assert.equal(completed.result.output_format, "plain_text_fallback");
+  assert.equal(completed.result.output_format, "clean_leads");
   assert.equal(llmRequests[0].response_format.type, "json_schema");
   assert.equal(llmRequests[0].response_format.json_schema.strict, true);
   assert.ok(notifications.some((text) => /Status: Completed/.test(text)));
   assert.ok(notifications.some((text) => /I have gathered/.test(text)));
-  assert.ok(notifications.some((text) => /Example Auto Repair/.test(text)));
+  assert.ok(
+    notifications.every((text) => !/Example Auto Repair|sample-care/.test(text))
+  );
   assert.ok(
     notifications.every((text) => !/Unexpected token/.test(text))
   );
@@ -1056,7 +1130,7 @@ test("15-minute timeout returns checkpointed partial progress", async () => {
 
   assert.equal(result.partial, true);
   assert.match(result.summary, /15-minute execution window/);
-  assert.match(result.raw_result, /Previously verified result/);
+  assert.equal(result.raw_result, undefined);
   assert.ok(
     progressUpdates.some(
       (update) => update.stage === "Extending execution..."
@@ -1299,4 +1373,39 @@ test("explicit email command creates a draft and does not send", async () => {
   assert.equal(draftCount, 1);
   assert.match(replies[0], /Nothing has been sent/);
   assert.match(replies[0], /\/approve/);
+});
+
+test("email provider actions occur only after explicit approval", async () => {
+  const db = await memoryDb();
+  const draft = await createEmailApprovalDraft({
+    userId: "john",
+    chatId: "42",
+    emailTask: {
+      to: "buyer@example.com",
+      subject: "Hello",
+      body: "Draft body"
+    },
+    db
+  });
+  assert.equal(draft.provider_id, null);
+  assert.equal(draft.status, "pending_approval");
+
+  const providerCalls = [];
+  const sent = await approveEmailDraft(draft.id, "john", {
+    db,
+    createDraft: async (payload) => {
+      providerCalls.push(["draft", payload]);
+      return { id: "provider-draft-1" };
+    },
+    sendDraft: async (payload) => {
+      providerCalls.push(["send", payload]);
+      return { id: "provider-message-1" };
+    }
+  });
+
+  assert.deepEqual(
+    providerCalls.map(([action]) => action),
+    ["draft", "send"]
+  );
+  assert.equal(sent.status, "sent");
 });

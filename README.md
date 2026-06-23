@@ -364,6 +364,16 @@ asks to save, write, append, or export results to Google Sheets. Missing Google
 credentials never fail a normal task; an explicitly requested Sheets write is
 skipped and the results are still returned in Telegram.
 
+Lily's core behavior is enforced in code:
+
+- Ask mode performs research only: Research → Verify → Filter → Rank → Format → Deliver.
+- Execute mode stores requests locally and requires explicit approval before any
+  provider-side draft, send, contact, Sheets write, or other external action.
+- Telegram output never exposes JSON, scraped source text, tool arguments, or Markdown source.
+- Leads are deduplicated and limited to company, website, email, phone, location,
+  relevance, and confidence score. Directory pages, ads, and unrelated results are removed.
+- Internal debug output is disabled unless `LILY_DEBUG=true`.
+
 OAuth access tokens expire. In production, rotate the token or place a token
 refreshing proxy in front of these tools.
 

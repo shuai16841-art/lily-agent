@@ -83,6 +83,7 @@ test("Chinese email command preserves recipient and short body for approval", as
 test("non-send email wording is a command without tool execution", () => {
   assert.deepEqual(classifyTaskIntent("Write an outreach email for a repair shop"), {
     intent: "COMMAND",
+    mode: "ASK",
     action: "RESPOND"
   });
 });

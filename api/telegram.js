@@ -2,6 +2,9 @@ import { classifyTaskIntent, runLilyTask, sendJson } from "../lib/lily.js";
 import { getDatabase } from "../lib/db.js";
 import { formatTaskReport } from "../lib/queue.js";
 import { triggerBackgroundWorker } from "../lib/worker-trigger.js";
+import { formatCleanResult, formatSafeText } from "../lib/output-formatter.js";
+import { processLeads } from "../lib/lead-pipeline.js";
+import { logger } from "../lib/logger.js";
 import {
   approveEmailDraft,
   createBackgroundTask,
@@ -20,11 +23,6 @@ globalThis.__lilyProcessedTelegramUpdates = processedTelegramUpdates;
 
 function cleanText(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function isJsonLikeText(value) {
-  const text = cleanText(value).replace(/^```(?:json)?\s*/i, "");
-  return text.startsWith("{") || text.startsWith("[");
 }
 
 function formatNotes(notes) {
@@ -65,7 +63,10 @@ export function formatLilyResult(result) {
     result?.action === "CONVERSATIONAL_RESPONSE" ||
     result?.action === "EMAIL_CLARIFICATION"
   ) {
-    return cleanText(result.message) || "Please provide the missing email details.";
+    return formatSafeText(
+      result.message,
+      "Please provide the missing email details."
+    );
   }
 
   if (result?.action === "EMAIL_SENT") {
@@ -77,7 +78,7 @@ export function formatLilyResult(result) {
   }
 
   if (typeof result === "string") {
-    return result.trim();
+    return formatSafeText(result);
   }
 
   if (!result || typeof result !== "object") {
@@ -87,7 +88,6 @@ export function formatLilyResult(result) {
   const summary = cleanText(result.summary);
   const response = cleanText(result.response);
   const task = cleanText(result.task);
-  const rawResult = cleanText(result.raw_result);
   const notes = formatNotes(result.notes);
   const leads = Array.isArray(result.leads) ? result.leads.filter(Boolean) : [];
   const emails = leads
@@ -134,15 +134,31 @@ export function formatLilyResult(result) {
         .map((lead, index) => formatLead(lead, index))
         .join("\n\n")}`
     );
-  } else if (rawResult && !isJsonLikeText(rawResult)) {
-    sections.push(rawResult);
   }
 
   if (notes) {
     sections.push(notes);
   }
 
-  return sections.filter(Boolean).join("\n\n");
+  const legacyText = sections.filter(Boolean).join("\n\n");
+  if (leads.length) {
+    return formatCleanResult({
+      summary: summary || task || "Research completed.",
+      buyers: processLeads(
+        leads.map((lead) => ({
+          company: lead.company || lead.company_name,
+          website: lead.website,
+          email: lead.email,
+          phone: lead.phone,
+          location: lead.location,
+          relevance: lead.relevance || lead.reason_good_lead,
+          confidence_score: lead.confidence_score || lead.confidence
+        }))
+      ),
+      notes: result.notes
+    });
+  }
+  return formatSafeText(legacyText);
 }
 
 function splitTelegramMessage(text, limit = TELEGRAM_MESSAGE_LIMIT) {
@@ -498,7 +514,7 @@ async function processTelegramUpdateOnce(
       messagesSent: chunks.length
     };
   } catch (error) {
-    console.error("[Telegram webhook] Processing failed:", error);
+    logger.error("[Telegram webhook] Processing failed", error);
     const errorText = `Lily could not complete that request: ${error.message || "Unexpected error"}`;
 
     try {
@@ -551,7 +567,7 @@ export async function processTelegramUpdate(
         };
       }
     } catch (error) {
-      console.error("[Telegram webhook] Database deduplication failed:", error);
+      logger.error("[Telegram webhook] Database deduplication failed", error);
       // Continue processing so a database outage does not take down Telegram.
     }
     return processTelegramUpdateOnce(update, { ...options, db });
@@ -601,7 +617,7 @@ export default async function handler(req, res) {
     });
     return sendJson(res, 200, result);
   } catch (error) {
-    console.error("[Telegram webhook] Unhandled error:", error);
+    logger.error("[Telegram webhook] Unhandled error", error);
     return sendJson(res, error.statusCode || 500, {
       ok: false,
       error: error.message || "Unexpected server error"

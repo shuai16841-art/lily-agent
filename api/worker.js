@@ -1,5 +1,6 @@
 import { runScheduledWorkerCycle } from "../lib/queue.js";
 import { sendJson } from "../lib/lily.js";
+import { logger } from "../lib/logger.js";
 
 export const config = {
   maxDuration: 300
@@ -34,7 +35,7 @@ export default async function handler(req, res) {
       ...cycle
     });
   } catch (error) {
-    console.error("[Scheduled worker] Failed:", error);
+    logger.error("[Scheduled worker] Failed", error);
     return sendJson(res, 500, {
       ok: false,
       error: error.message || "Worker failed"
