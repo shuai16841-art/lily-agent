@@ -164,7 +164,7 @@ Recommended:
    environment variables.
 
 When Telegram creates a background task, the webhook immediately starts the
-Vercel worker directly with `waitUntil`. The worker claims that exact Task ID,
+Vercel worker directly with `waitUntil`. The worker claims the exact queued task,
 persists stage changes in Turso, and sends Telegram heartbeats every 45 seconds
 until the task completes or fails. Sending `/status` also starts the worker
 again, which provides a manual recovery path for an interrupted invocation.
@@ -280,7 +280,7 @@ immediately, stored as queued tasks, processed by the worker, and followed by a
 final Telegram report. The acknowledgement includes an estimated duration, and
 the worker sends stage transitions plus a heartbeat every 30–60 seconds
 (`LILY_STATUS_INTERVAL_MS`, default 45 seconds). Every message uses
-`[Task ID: xxxx]`, `Status`, progress, and ETA. `/status` shows the persisted
+`Status`, progress, ETA, and current action. `/status` shows the persisted
 status, percentage, current activity, and remaining ETA; `/tasks` lists recent
 persisted tasks and their ETAs. Stage history and iteration checkpoints are
 stored in the task metadata in Turso. A worker restart requeues stale running

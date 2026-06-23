@@ -190,10 +190,6 @@ async function sendTelegramMessage(token, chatId, text, fetchImpl = fetch) {
   return responseBody;
 }
 
-function shortId(id) {
-  return id?.slice(0, 8) || "";
-}
-
 function databaseSetupMessage() {
   return [
     "Turso task storage is not configured, so persistent task features are temporarily unavailable.",
@@ -229,10 +225,10 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
         const eta = formatTaskEta(task);
         return [
           formatProgressStatus(
-            task.id,
             task.metadata?.current_stage || task.status,
             eta,
-            Number(task.progress || 0)
+            Number(task.progress || 0),
+            task.metadata?.current_activity
           ),
           task.objective
         ]
@@ -254,14 +250,11 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
     }
     return [
       formatProgressStatus(
-        task.id,
         task.metadata?.current_stage || task.status,
         formatTaskEta(task),
-        Number(task.progress || 0)
+        Number(task.progress || 0),
+        task.metadata?.current_activity
       ),
-      task.metadata?.current_activity
-        ? `Current step: ${task.metadata.current_activity}`
-        : "",
       task.objective,
       task.error ? `Error: ${task.error}` : ""
     ]
@@ -280,7 +273,7 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
       return "Task not found.";
     }
     const stopped = await db.stopTask(task.id, userId);
-    return stopped ? `Task ${shortId(task.id)} stopped.` : "That task is not running.";
+    return stopped ? "Task stopped." : "That task is not running.";
   }
 
   if (command === "/report") {
@@ -294,7 +287,12 @@ async function handleTelegramCommand(text, { userId, chatId, db, approveDraft })
       return "Task not found.";
     }
     if (task.status !== "completed") {
-      return `Task ${shortId(task.id)} is ${task.status} (${task.progress}%).`;
+      return formatProgressStatus(
+        task.metadata?.current_stage || task.status,
+        formatTaskEta(task),
+        Number(task.progress || 0),
+        task.metadata?.current_activity
+      );
     }
     return formatTaskReport(task, await db.listEntities(task.id));
   }
@@ -464,10 +462,10 @@ async function processTelegramUpdateOnce(
         chatId,
         [
           formatProgressStatus(
-            task.id,
             "Received",
             formatDuration(task.metadata.estimated_duration_seconds),
-            0
+            0,
+            task.metadata.current_activity
           ),
           "",
           "I created a background task and will keep reporting progress until completion.",

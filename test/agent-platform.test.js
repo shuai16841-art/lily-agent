@@ -21,7 +21,7 @@ import {
   triggerBackgroundWorker
 } from "../lib/worker-trigger.js";
 import { isAuthorizedWorkerRequest } from "../api/worker.js";
-import { parseAgentResult } from "../lib/agent.js";
+import { parseAgentResult, runAutonomousTask } from "../lib/agent.js";
 import {
   getAgentToolDefinitions,
   taskRequestsGoogleSheets
@@ -278,14 +278,19 @@ test("task estimates scale with requested research volume", () => {
   );
 });
 
-test("progress status uses the required Task ID format", () => {
+test("progress status omits internal identifiers and shows current action", () => {
   assert.equal(
-    formatProgressStatus("12345678-abcd", "Researching...", "about 4 minutes", 25),
+    formatProgressStatus(
+      "Researching...",
+      "about 4 minutes",
+      25,
+      "Verifying company contacts"
+    ),
     [
-      "[Task ID: 12345678]",
       "Status: Researching...",
       "Progress: 25%",
-      "ETA: about 4 minutes"
+      "ETA: about 4 minutes",
+      "Current Action: Verifying company contacts"
     ].join("\n")
   );
 });
@@ -325,7 +330,7 @@ test("Telegram creates a background task and acknowledges immediately", async ()
   assert.ok(result.taskId);
   assert.equal(result.workerScheduled, true);
   assert.deepEqual(scheduled, [{ taskId: result.taskId }]);
-  assert.match(sent[0], /\[Task ID: [a-f0-9]{8}\]/);
+  assert.doesNotMatch(sent[0], /\[[a-f0-9]{8}\]/i);
   assert.match(sent[0], /Status: Received/);
   assert.match(sent[0], /Progress: 0%/);
   assert.match(sent[0], /ETA: about 11 minutes/);
@@ -368,7 +373,7 @@ test("Telegram /status and /stop manage the latest task", async () => {
   );
 
   assert.match(replies[0], /queued/);
-  assert.match(replies[0], /\[Task ID: [a-f0-9]{8}\]/);
+  assert.doesNotMatch(replies[0], /\[[a-f0-9]{8}\]/i);
   assert.match(replies[0], /Status: queued/);
   assert.match(replies[0], /Progress: 0%/);
   assert.match(replies[1], /stopped/);
@@ -466,7 +471,7 @@ test("scheduled heartbeat checks Turso-style running tasks and sends Telegram st
 
   assert.deepEqual(heartbeatTaskIds, [task.id]);
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0].text, /\[Task ID:/);
+  assert.doesNotMatch(notifications[0].text, /\[[a-f0-9]{8}\]/i);
   assert.match(notifications[0].text, /Status: Researching\.\.\./);
   const updated = await db.getTask(task.id);
   assert.equal(
@@ -653,6 +658,10 @@ test("end-to-end research task calls live search and returns verified buyers", a
     assert.equal(completed.status, "completed");
     assert.equal(completed.progress, 100);
     assert.equal(buyers.length, 2);
+    assert.ok(completed.metadata.current_step);
+    assert.ok(Number.isFinite(completed.metadata.progress_percentage));
+    assert.ok(Number.isFinite(completed.metadata.eta_seconds));
+    assert.equal(completed.metadata.latest_result.tool, "web_search");
     assert.deepEqual(
       completed.metadata.stage_history.map((item) => item.stage),
       [
@@ -924,6 +933,134 @@ test("non-JSON agent response completes as a readable Telegram report", async ()
   assert.ok(notifications.some((text) => /Example Auto Repair/.test(text)));
   assert.ok(
     notifications.every((text) => !/Unexpected token/.test(text))
+  );
+});
+
+test("iteration limit returns partial progress instead of failing", async () => {
+  const originalTavilyKey = process.env.TAVILY_API_KEY;
+  process.env.TAVILY_API_KEY = "test-tavily-key";
+  const db = await memoryDb();
+  const task = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Research a large buyer list",
+    metadata: {
+      checkpoint_iteration: 0,
+      current_stage: "Researching..."
+    }
+  });
+  const progressUpdates = [];
+  let modelCalls = 0;
+  const llmClient = {
+    chat: {
+      completions: {
+        create: async () => {
+          modelCalls += 1;
+          return {
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: `search-${modelCalls}`,
+                      type: "function",
+                      function: {
+                        name: "web_search",
+                        arguments: JSON.stringify({
+                          query: `buyer search ${modelCalls}`,
+                          max_results: 1
+                        })
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          };
+        }
+      }
+    }
+  };
+
+  try {
+    const result = await runAutonomousTask(task, {
+      db,
+      llmClient,
+      maxIterations: 10,
+      timeoutMs: 60_000,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [
+            {
+              title: "Partial buyer",
+              url: "https://partial.example",
+              content: "Partial verified research.",
+              score: 0.8
+            }
+          ]
+        })
+      }),
+      onProgress: async (update) => progressUpdates.push(update)
+    });
+
+    assert.equal(modelCalls, 20);
+    assert.equal(result.partial, true);
+    assert.equal(result.output_format, "partial_progress");
+    assert.ok(
+      progressUpdates.some(
+        (update) =>
+          update.stage === "Extending execution..." &&
+          update.message === "Continuing unfinished work"
+      )
+    );
+  } finally {
+    if (originalTavilyKey === undefined) {
+      delete process.env.TAVILY_API_KEY;
+    } else {
+      process.env.TAVILY_API_KEY = originalTavilyKey;
+    }
+  }
+});
+
+test("15-minute timeout returns checkpointed partial progress", async () => {
+  const db = await memoryDb();
+  const task = await db.createTask({
+    userId: "john",
+    chatId: "42",
+    objective: "Long research task",
+    metadata: {
+      checkpoint_iteration: 0,
+      latest_result: { summary: "Previously verified result" }
+    }
+  });
+  const progressUpdates = [];
+  const result = await runAutonomousTask(task, {
+    db,
+    timeoutMs: 5,
+    llmClient: {
+      chat: {
+        completions: {
+          create: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return { choices: [] };
+          }
+        }
+      }
+    },
+    onProgress: async (update) => progressUpdates.push(update)
+  });
+
+  assert.equal(result.partial, true);
+  assert.match(result.summary, /15-minute execution window/);
+  assert.match(result.raw_result, /Previously verified result/);
+  assert.ok(
+    progressUpdates.some(
+      (update) => update.stage === "Extending execution..."
+    )
   );
 });
 
